@@ -107,8 +107,8 @@ func uptime(d time.Duration) string {
 var keyHelp = []string{
 	" ↑↓ select · enter/tap cycle",
 	" c compact now · s skip this time",
-	" d change default · ? hide keys",
-	" q close",
+	" d change default · tab settings",
+	" ? hide keys · q close",
 }
 
 // view is everything render needs beyond the status itself.
@@ -121,6 +121,16 @@ type view struct {
 	footer  string
 }
 
+// w is the width the panel draws in: the width constant, or the window if narrower.
+func (v view) w() int {
+	if v.width > 0 && v.width < width {
+		return v.width
+	}
+	return width
+}
+
+func splitLines(s string) []string { return strings.Split(strings.TrimRight(s, "\n"), "\n") }
+
 // screen is a rendered panel: its lines, and for each line the row it belongs to (-1 = none).
 type screen struct {
 	lines []string
@@ -132,17 +142,16 @@ func (sc *screen) add(row int, l string) {
 	sc.row = append(sc.row, row)
 }
 
-func layout(s store.Status, now time.Time, v view) (head, body, foot screen) {
-	w := width
-	if v.width > 0 && v.width < w {
-		w = v.width
-	}
+// top is the header both views share: the title (or that the plugin is not running), a config error, and the
+// one-line help or, with ?, every key.
+func top(s store.Status, now time.Time, v view, title, help string) (head screen) {
+	w := v.w()
 	if !v.running {
 		for _, l := range wrap(fmt.Sprintf(" Warm Compact is not running. Last status from %s; start it with the plugin's restart action.", s.Started.Format("2006-01-02 15:04")), w, " ") {
 			head.add(-1, l)
 		}
 	} else {
-		head.add(-1, clip(" Warm Compact · default "+s.Default.Label(), w))
+		head.add(-1, clip(title, w))
 	}
 	if s.ConfigError != "" {
 		for _, l := range wrap(" ✗ config: "+s.ConfigError, w, "   ") {
@@ -161,8 +170,14 @@ func layout(s store.Status, now time.Time, v view) (head, body, foot screen) {
 			head.add(-1, clip(" up "+uptime(now.Sub(s.Started))+" · last event "+last, w))
 		}
 	} else {
-		head.add(-1, clip(" ? keys · enter/tap cycle · q close", w))
+		head.add(-1, clip(help, w))
 	}
+	return head
+}
+
+func layout(s store.Status, now time.Time, v view) (head, body, foot screen) {
+	w := v.w()
+	head = top(s, now, v, " Warm Compact · default "+s.Default.Label(), " ? keys · tab settings · q close")
 	ws, first := "", true
 	for i, r := range s.Rows {
 		if first || r.Workspace != ws {
@@ -196,9 +211,14 @@ func layout(s store.Status, now time.Time, v view) (head, body, foot screen) {
 	return head, body, foot
 }
 
-// frame fits the layout to the window height, scrolling the body to keep the cursor's row in view.
+// frame is the sessions view fitted to the window.
 func frame(s store.Status, now time.Time, v view) screen {
 	head, body, foot := layout(s, now, v)
+	return fit(head, body, foot, v)
+}
+
+// fit fits a view to the window height, scrolling the body to keep the cursor's row in view.
+func fit(head, body, foot screen, v view) screen {
 	room := len(body.lines)
 	if v.height > 0 {
 		room = v.height - len(head.lines) - len(foot.lines)
@@ -261,7 +281,14 @@ type m struct {
 	keys    bool   // the full key list is shown
 	problem string // last write error
 	notice  string
+	tab     int // sessionsTab or settingsTab
+	st      settings
 }
+
+const (
+	sessionsTab = iota
+	settingsTab
+)
 
 func newModel(dir string) m {
 	return m{dir: dir, running: run.Running}.load()
@@ -277,9 +304,20 @@ func (x m) view() view {
 	return view{cursor: x.cursor, width: x.width, height: x.height, running: x.live, keys: x.keys, footer: footer}
 }
 
-// rowAt is the row drawn on screen line y, or -1.
+// screen is the current view fitted to the window.
+func (x m) screen(now time.Time) screen {
+	v := x.view()
+	if x.tab == settingsTab {
+		v.cursor = x.st.cursor
+		head, body, foot := settingsLayout(x.st, x.s, now, v)
+		return fit(head, body, foot, v)
+	}
+	return frame(x.s, now, v)
+}
+
+// rowAt is the row (a session, or a setting) drawn on screen line y, or -1.
 func (x m) rowAt(y int) int {
-	sc := frame(x.s, time.Now(), x.view())
+	sc := x.screen(time.Now())
 	if y < 0 || y >= len(sc.row) {
 		return -1
 	}
@@ -289,6 +327,7 @@ func (x m) rowAt(y int) int {
 func (x m) load() m {
 	x.s, x.err = store.ReadStatus(filepath.Join(x.dir, "status.json"))
 	x.live = x.running(x.dir)
+	x = x.loadSettings()
 	if x.pane != "" {
 		for i, r := range x.s.Rows {
 			if r.Pane == x.pane {
@@ -349,17 +388,43 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		x.width, x.height = msg.Width, msg.Height
 		return x.load(), nil
 	case tea.MouseMsg:
-		if msg.Action == tea.MouseActionRelease && msg.Button == tea.MouseButtonLeft {
+		if msg.Action == tea.MouseActionRelease && msg.Button == tea.MouseButtonLeft && x.st.editing == "" {
 			if row := x.rowAt(msg.Y); row >= 0 {
+				if x.tab == settingsTab {
+					x.st.cursor = row
+					return x.activate()
+				}
 				return x.setCursor(row).request("toggle"), nil
 			}
 		}
 	case tea.KeyMsg:
+		if msg.String() == "ctrl+c" {
+			return x, tea.Quit
+		}
+		if x.st.editing != "" {
+			return x.editKey(msg)
+		}
 		switch msg.String() {
-		case "q", "esc", "ctrl+c":
+		case "esc":
+			if x.tab == settingsTab {
+				x.tab, x.notice, x.problem = sessionsTab, "", ""
+				return x, nil
+			}
+			return x, tea.Quit
+		case "q":
 			return x, tea.Quit
 		case "?":
 			x.keys = !x.keys
+			return x, nil
+		case "tab", "shift+tab":
+			x.tab = 1 - x.tab
+			x.notice, x.problem = "", ""
+			return x, nil
+		}
+		if x.tab == settingsTab {
+			return x.settingsKey(msg)
+		}
+		switch msg.String() {
 		case "up", "k":
 			if x.cursor > 0 {
 				x = x.setCursor(x.cursor - 1)
@@ -381,6 +446,16 @@ func (x m) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return x.act(func() error { return config.SetDefault(filepath.Join(x.dir, "config.toml"), next) }), nil
 		}
+	default:
+		if x.st.editing != "" { // the editor's cursor blink
+			var cmd tea.Cmd
+			if x.st.editing == "instructions" {
+				x.st.area, cmd = x.st.area.Update(msg)
+			} else {
+				x.st.input, cmd = x.st.input.Update(msg)
+			}
+			return x, cmd
+		}
 	}
 	return x, nil
 }
@@ -393,7 +468,7 @@ func (x m) View() string {
 		}
 		return strings.Join(append(wrap(fmt.Sprintf(" Warm Compact is not running (no status: %v)", x.err), w, "   "), " q close"), "\n")
 	}
-	return renderView(x.s, time.Now(), x.view())
+	return strings.Join(x.screen(time.Now()).lines, "\n")
 }
 
 // fps caps bubbletea's redraw timer (default 60 a second), which is most of an idle panel's CPU; the view

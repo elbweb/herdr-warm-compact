@@ -46,8 +46,12 @@ All of these change the same per-session setting, at any time.
 1. **The panel.** A terminal UI listing every Claude session, grouped by workspace, with its tokens, setting,
    cache lifetime and status. It is 36 columns wide whatever its window, so it reads the same in a phone client
    such as Collie. Arrow keys select a row; Enter, Space, a click or a tap cycles its setting; "compact now" and
-   "skip this time" are per row. The header shows the global default (changeable there; it is written to
-   `config.toml`) and any config error; `?` shows every key, plugin uptime and the last event. Open it with
+   "skip this time" are per row. The header shows the global default (`d` switches it) and any config error;
+   `?` shows every key, plugin uptime and the last event. `Tab` switches to **Settings**: every key of
+   `config.toml` (below) with its value, marked `(default)` when the file does not set it. Enter cycles a
+   choice or opens an editor (Enter saves, or Ctrl+S for the multi-line `instructions`; Esc cancels), and `r`
+   resets a key to its default. Only that key's line changes, so the rest of the file keeps its comments,
+   and a value the plugin would reject is refused with the reason before anything is written. Open it with
    the plugin's `open-panel` action ("Warm Compact: panel"), as a popup or, with `panel = "tab"` in the
    plugin's config, as a tab that stays open (and so shows in a phone client). To put the action on a key, add
    to herdr's `config.toml` (`prefix+a` is free in herdr's defaults):

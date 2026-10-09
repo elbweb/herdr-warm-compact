@@ -226,6 +226,26 @@ func resident(ctx context.Context, env Env, logf func(string, ...any)) error {
 	}
 	eng := engine.New(client, transcripts{env.ProjectsDir}, realClock{}, ov, cfg, post, logf)
 
+	// reloadConfig re-reads config.toml after a change. A file it cannot open yet (on Windows, the writer's
+	// rename can leave it briefly locked, as with request files) is retried for about 2 s before it counts as
+	// an error; a file that does not parse is an error at once.
+	var reloadConfig func(tries int)
+	reloadConfig = func(tries int) {
+		c, err := config.Load(cfgPath)
+		var pe *fs.PathError
+		if err != nil && errors.As(err, &pe) && tries < 10 {
+			time.AfterFunc(200*time.Millisecond, func() { post(func() { reloadConfig(tries + 1) }) })
+			return
+		}
+		if err != nil {
+			cfgErr = err
+			logf("config: %v (keeping the last good settings)", err)
+			return
+		}
+		cfg, cfgErr = c, nil
+		eng.SetConfig(c)
+	}
+
 	status := store.Status{PID: os.Getpid(), Exe: env.Exe, Started: time.Now()}
 	statusPath := filepath.Join(env.ConfigDir, "status.json")
 	var lastStatus []byte
@@ -362,13 +382,7 @@ func resident(ctx context.Context, env Env, logf func(string, ...any)) error {
 		case we := <-watcher.Events:
 			switch {
 			case filepath.Base(we.Name) == "config.toml":
-				if c, err := config.Load(cfgPath); err != nil {
-					cfgErr = err
-					logf("config: %v (keeping the last good settings)", err)
-				} else {
-					cfg, cfgErr = c, nil
-					eng.SetConfig(c)
-				}
+				reloadConfig(0)
 			case filepath.Dir(we.Name) == store.RequestsDir(env.ConfigDir) && strings.HasSuffix(we.Name, ".json"):
 				takeRequests()
 			default:
