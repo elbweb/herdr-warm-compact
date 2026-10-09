@@ -76,3 +76,30 @@ func TestRequestTakerNoRetryWhenEmpty(t *testing.T) {
 	}
 	rt.pass()
 }
+
+func TestRequestTakerLogsOnlyAfterTwoSeconds(t *testing.T) {
+	dir := t.TempDir()
+	rd := store.RequestsDir(dir)
+	store.WriteRequest(rd, store.Request{Kind: "set", Pane: "p", Value: "on"})
+	clock := time.Unix(1000, 0)
+	logs := 0
+	var next func()
+	rt := &requestTaker{dir: rd, now: func() time.Time { return clock },
+		take:     func(string) ([]store.Request, error) { return nil, nil },
+		handle:   func(store.Request) {},
+		schedule: func(d time.Duration, f func()) { next = f },
+		logf:     func(string, ...any) { logs++ },
+	}
+	rt.pass()
+	clock = clock.Add(500 * time.Millisecond)
+	next()
+	if logs != 0 {
+		t.Fatalf("logged %d before 2 s", logs)
+	}
+	clock = clock.Add(2 * time.Second)
+	next()
+	next()
+	if logs != 1 {
+		t.Fatalf("logged %d, want exactly 1", logs)
+	}
+}
