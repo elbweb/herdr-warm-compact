@@ -25,6 +25,13 @@ contexts = ["global"]
 command = ["./herdr-warm-compact", "restart"]
 
 [[actions]]
+id = "stop"
+title = "Warm Compact: stop"
+description = "Ask the running Warm Compact to quit; run it before disabling or uninstalling the plugin"
+contexts = ["global"]
+command = ["./herdr-warm-compact", "stop"]
+
+[[actions]]
 id = "toggle"
 title = "Warm Compact: cycle this session's setting"
 description = "default, auto, on, off"

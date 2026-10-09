@@ -55,6 +55,17 @@ func dispatch(args []string) error {
 			return err
 		}
 		return run.Detach(env.Exe, "run")
+	case "stop":
+		// Asks the resident to quit (never a kill); run before disabling or uninstalling the plugin.
+		dir, err := run.ConfigDir()
+		if err != nil {
+			return err
+		}
+		if err := run.Stop(dir); err != nil {
+			return err
+		}
+		fmt.Println("Warm Compact stopped")
+		return nil
 	case "set":
 		if len(args) != 2 {
 			return fmt.Errorf("usage: herdr-warm-compact set <default|auto|on|off>")
@@ -76,7 +87,7 @@ func dispatch(args []string) error {
 		if err := store.WriteRequest(store.RequestsDir(dir), store.Request{Kind: "set", Pane: pane, Value: args[1]}); err != nil {
 			return err
 		}
-		fmt.Printf("this session's compaction setting: %s\n", args[1])
+		fmt.Printf("requested: this session's compaction setting → %s (check the panel or sidebar)\n", args[1])
 		return nil
 	case "toggle":
 		var c struct {
@@ -103,5 +114,5 @@ func dispatch(args []string) error {
 		}
 		return panel.Run(dir)
 	}
-	return fmt.Errorf("unknown command %q (want run, restart, set, toggle, open-panel or panel)", cmd)
+	return fmt.Errorf("unknown command %q (want run, restart, stop, set, toggle, open-panel or panel)", cmd)
 }

@@ -20,6 +20,10 @@ Requires herdr 0.9.3 or newer and a Go toolchain (the plugin is built on install
 The plugin starts once with herdr and keeps running. To update, run the install again, then the plugin's
 `restart` action, which asks the running copy to stop and starts a fresh one.
 
+Run the Stop action ("Warm Compact: stop") before disabling or uninstalling the plugin: the running copy is
+a separate process and otherwise keeps working until it notices its executable is gone or herdr has been
+unreachable for five minutes.
+
 On a machine with an attack-surface-reduction rule (for example Windows Defender ASR), allow herdr's plugins
 folder so the freshly built binary may run.
 
@@ -52,6 +56,9 @@ All of these change the same per-session setting, at any time.
 3. **The sidebar token** `$compact` (below).
 4. **A key (optional).** The `toggle` action ("Warm Compact: cycle this session's setting") works on a pane and
    can be bound to a key in herdr's config.
+
+The plugin's actions: `open-panel` ("Warm Compact: panel"), `toggle` ("Warm Compact: cycle this session's
+setting"), `restart` ("Warm Compact: restart") and `stop` ("Warm Compact: stop").
 
 ### The sidebar token
 
@@ -127,7 +134,7 @@ plugin's `set <default|auto|on|off>` command for the session's own pane.
   the pane is still idle, the transcript has no newer entry, the screen has not changed within
   `hold_if_active`, no subagent or background task is running, the session is still eligible.
 - **Compacting.** If the prompt box holds a draft, it is stashed with Ctrl+S (and the box verified empty);
-  then `/compact <instructions>` is typed and sent. When the session is idle again within `compact_timeout`,
+  then `/compact <instructions>` is typed, and sent only once the box shows it. When the session is idle again within `compact_timeout`,
   the draft is restored, and the transcript is re-read to confirm the context shrank. A draft that cannot be
   restored is reported (`✗ draft not restored`); if you typed something new meanwhile, nothing is overwritten
   and the draft stays in Claude's stash.
@@ -137,8 +144,8 @@ plugin's `set <default|auto|on|off>` command for the session's own pane.
 - Act on a working or blocked pane.
 - Retry: any failure is reported and left for you.
 - Compact a 5-minute-cache session unless you allow it with `five_minute_ttl = true`.
-- Run anything per tick: it is one resident process driven by herdr's events, with no polling timer and no
-  per-event process spawns.
+- Spawn work per event or per pane: it is one resident process driven by herdr's events, with one minute
+  tick; no per-event or per-pane processes.
 
 If the plugin is not running, no countdowns appear anywhere, the panel says "not running", and `set` and
 `toggle` refuse rather than silently doing nothing; the `restart` action starts it again. `herdr plugin log list --plugin herdr.warm-compact`
@@ -146,7 +153,8 @@ shows its startup process.
 
 ## Caveats
 
-Session facts (timestamp, context size, cache lifetime) are read from Claude Code's transcript files, an
+Session facts (timestamp, context size, cache lifetime) are read from Claude Code's transcript files
+(under `$CLAUDE_CONFIG_DIR/projects` when `CLAUDE_CONFIG_DIR` is set, else `~/.claude/projects`), an
 internal format that may change; an unrecognised transcript shows `✗ transcript unreadable` and the session
 is never armed. Whether herdr's right-click menus list plugin panes or actions is unverified; use the panel
 command or the actions above.
