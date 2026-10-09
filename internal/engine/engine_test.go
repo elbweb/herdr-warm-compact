@@ -573,3 +573,18 @@ func TestTickAfterSuspendTooCloseToExpiryGoesQuiet(t *testing.T) {
 		t.Fatalf("%v", r.h.calls)
 	}
 }
+
+func TestWorkingAtSubmitPressesNoEnter(t *testing.T) {
+	r := newRig()
+	r.h.screens["p1"] = []string{scr("❯ "), scr("❯ "), scr("❯ "), typed()}
+	r.e.Status(pane("idle"))
+	r.clk.Advance(55 * time.Minute) // /compact typed, settle pending
+	r.e.Status(pane("working"))
+	r.clk.Advance(time.Second)
+	if len(r.h.sent("keys p1 enter")) != 0 {
+		t.Fatalf("enter pressed into a working pane: %v", r.h.calls)
+	}
+	if row := r.e.Rows()[0]; row.Phase != model.Failed || row.Reason != "busy before submit; nothing was submitted" {
+		t.Fatalf("%+v", row)
+	}
+}

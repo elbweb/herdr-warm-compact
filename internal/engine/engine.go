@@ -428,6 +428,10 @@ func (e *Engine) submit(t *tracked) {
 	ctx, cancel := e.ctx()
 	defer cancel()
 	t.typing = false
+	if !idle(t.pane.Status) {
+		e.fail(t, "busy before submit; nothing was submitted")
+		return
+	}
 	text, err := e.h.Read(ctx, t.pane.ID)
 	d, ok := screen.Draft(text)
 	if err != nil || !ok || !strings.HasPrefix(strings.Join(strings.Fields(d), " "), "/compact") {
