@@ -1,6 +1,10 @@
 package run
 
 import (
+	"os"
+	"path/filepath"
+
+	"github.com/elbweb/herdr-warm-compact/internal/store"
 	"testing"
 	"time"
 )
@@ -65,5 +69,25 @@ func TestStopNotRunningReturnsQuickly(t *testing.T) {
 	}
 	if time.Since(start) > time.Second {
 		t.Fatal("Stop on a dir with no resident was slow")
+	}
+}
+
+func TestClaimUnreadableIdentityNeverQuitsHolder(t *testing.T) {
+	dir := t.TempDir()
+	l, err := acquireLock(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Release()
+	l.Write(LockInfo{PID: 1, Server: "1:2", Started: "x"})
+	got, err := claim(Env{ConfigDir: dir}, "", func(string, ...any) {})
+	if got != nil || err != nil {
+		t.Fatalf("claim = %v, %v; want nil, nil", got, err)
+	}
+	if ents, _ := os.ReadDir(store.RequestsDir(dir)); len(ents) != 0 {
+		t.Fatalf("requests written: %v", ents)
+	}
+	if _, err := os.Stat(filepath.Join(store.RequestsDir(dir), "quit.json")); err == nil {
+		t.Fatal("quit request written")
 	}
 }

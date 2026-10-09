@@ -132,6 +132,10 @@ func claim(env Env, identity string, logf func(string, ...any)) (*Lock, error) {
 	if err != errLocked {
 		return l, err
 	}
+	if identity == "" {
+		logf("already running (server identity unreadable)")
+		return nil, nil
+	}
 	h, _ := readHolder(env.ConfigDir)
 	if h.Server == "" || h.Server == identity {
 		logf("already running as pid %d", h.PID)
@@ -149,6 +153,10 @@ func claim(env Env, identity string, logf func(string, ...any)) (*Lock, error) {
 
 func resident(ctx context.Context, env Env, logf func(string, ...any)) error {
 	identity := herdr.ServerIdentity(env.Socket)
+	for i := 0; identity == "" && i < 20 && ctx.Err() == nil; i++ {
+		time.Sleep(250 * time.Millisecond)
+		identity = herdr.ServerIdentity(env.Socket)
+	}
 	lock, err := claim(env, identity, logf)
 	if err != nil {
 		return err
@@ -157,7 +165,8 @@ func resident(ctx context.Context, env Env, logf func(string, ...any)) error {
 		return nil
 	}
 	defer lock.Release()
-	if err := lock.Write(LockInfo{PID: os.Getpid(), Server: identity, Started: time.Now().UTC().Format(time.RFC3339)}); err != nil {
+	started := time.Now().UTC().Format(time.RFC3339)
+	if err := lock.Write(LockInfo{PID: os.Getpid(), Server: identity, Started: started}); err != nil {
 		logf("lock info: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(env.ConfigDir, "exe-path"), []byte(env.Exe), 0o600); err != nil {
@@ -325,9 +334,17 @@ func resident(ctx context.Context, env Env, logf func(string, ...any)) error {
 				return nil
 			}
 		case <-minute.C:
-			if now := herdr.ServerIdentity(env.Socket); now != "" && now != identity {
-				logf("herdr server changed; exiting so the new server's copy runs")
-				return nil
+			if now := herdr.ServerIdentity(env.Socket); now != "" {
+				if identity == "" {
+					// Ours was unreadable at startup: adopt the first identity we can read.
+					identity = now
+					if err := lock.Write(LockInfo{PID: os.Getpid(), Server: identity, Started: started}); err != nil {
+						logf("lock info: %v", err)
+					}
+				} else if now != identity {
+					logf("herdr server changed; exiting so the new server's copy runs")
+					return nil
+				}
 			}
 			resync()
 			eng.Tick()
