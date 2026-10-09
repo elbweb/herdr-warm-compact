@@ -9,9 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
+	"io/fs"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
@@ -255,12 +256,12 @@ func decodeEvent(line []byte) (Event, error) {
 	return e, nil
 }
 
-// ServerIdentity is the content of HERDR_SOCKET_PATH's file (<pid>:<start-ns>), which names the running
-// server; "" when unreadable.
-func ServerIdentity(socket string) string {
-	b, err := os.ReadFile(socket)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(b))
+// ServerIdentity names the running herdr server behind HERDR_SOCKET_PATH, so a new server yields a new
+// identity; "" when unreadable. See identity_windows.go and identity_unix.go.
+func ServerIdentity(socket string) string { return serverIdentity(socket) }
+
+// Absent reports a dial failure that means no server is there: the socket or pipe does not exist, or
+// the connection was refused. Timeouts and herdr's own errors mean a server answered or exists.
+func Absent(err error) bool {
+	return err != nil && (errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED))
 }

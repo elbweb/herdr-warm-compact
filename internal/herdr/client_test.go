@@ -4,8 +4,13 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
+	"io/fs"
 	"net"
+	"os"
+	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -147,5 +152,32 @@ func TestSubscribeHandshakeTimesOut(t *testing.T) {
 	start := time.Now()
 	if _, err := c.Subscribe(context.Background(), nil); err == nil || time.Since(start) > time.Second {
 		t.Fatalf("%v after %v", err, time.Since(start))
+	}
+}
+
+func TestAbsent(t *testing.T) {
+	refused := &net.OpError{Op: "dial", Net: "unix", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}
+	missing := &fs.PathError{Op: "open", Path: "sock", Err: fs.ErrNotExist}
+	cases := []struct {
+		err  error
+		want bool
+	}{
+		{nil, false},
+		{refused, true},
+		{missing, true},
+		{context.DeadlineExceeded, false},
+		{&APIError{Code: "x", Message: "y"}, false},
+		{errors.New("other"), false},
+	}
+	for _, c := range cases {
+		if got := Absent(c.err); got != c.want {
+			t.Errorf("Absent(%v) = %v, want %v", c.err, got, c.want)
+		}
+	}
+}
+
+func TestServerIdentityOfMissingSocket(t *testing.T) {
+	if id := ServerIdentity(filepath.Join(t.TempDir(), "none")); id != "" {
+		t.Fatalf("identity of a missing socket: %q", id)
 	}
 }

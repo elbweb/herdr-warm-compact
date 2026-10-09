@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"os"
 	"os/exec"
@@ -34,11 +35,47 @@ func EnvFromOS() (Env, error) {
 	exe, _ := os.Executable()
 	home, _ := os.UserHomeDir()
 	env := Env{Socket: os.Getenv("HERDR_SOCKET_PATH"), ConfigDir: os.Getenv("HERDR_PLUGIN_CONFIG_DIR"),
-		ProjectsDir: filepath.Join(home, ".claude", "projects"), Exe: exe}
+		ProjectsDir: projectsDir(os.Getenv("CLAUDE_CONFIG_DIR"), home), Exe: exe}
 	if env.Socket == "" || env.ConfigDir == "" {
 		return env, errors.New("HERDR_SOCKET_PATH and HERDR_PLUGIN_CONFIG_DIR must be set (run me from herdr)")
 	}
 	return env, nil
+}
+
+// projectsDir is where Claude Code keeps transcripts: $CLAUDE_CONFIG_DIR/projects when that is set,
+// else ~/.claude/projects.
+func projectsDir(claudeConfigDir, home string) string {
+	if claudeConfigDir != "" {
+		return filepath.Join(claudeConfigDir, "projects")
+	}
+	return filepath.Join(home, ".claude", "projects")
+}
+
+// exeGone reports that the resident's own executable was removed (the plugin was uninstalled).
+func exeGone(path string) bool {
+	if path == "" {
+		return false
+	}
+	_, err := os.Stat(path)
+	return errors.Is(err, fs.ErrNotExist)
+}
+
+// absentLimit is how long herdr's socket may be missing or refusing before the resident exits.
+const absentLimit = 5 * time.Minute
+
+// reachability decides when herdr is gone: every call since the first failure found no server.
+type reachability struct{ since time.Time }
+
+// observe records one call's outcome and reports whether herdr has been absent for absentLimit.
+func (r *reachability) observe(err error, now time.Time) bool {
+	if !herdr.Absent(err) {
+		r.since = time.Time{}
+		return false
+	}
+	if r.since.IsZero() {
+		r.since = now
+	}
+	return now.Sub(r.since) >= absentLimit
 }
 
 // ConfigDir finds the plugin's config dir from outside herdr (the `set` command run by Claude).
@@ -240,11 +277,14 @@ func resident(ctx context.Context, env Env, logf func(string, ...any)) error {
 		}
 		return strings.Join(ids, ",")
 	}
+	var reach reachability
+	herdrGone := false
 	// resync refreshes every Claude pane from one snapshot; it asks the stream to re-subscribe only when
 	// the set of panes changed, not on every status change.
 	resync := func() {
 		before := paneSet()
 		agents, ws, err := client.Agents(ctx)
+		herdrGone = reach.observe(err, time.Now())
 		if err != nil {
 			logf("snapshot: %v", err)
 			return
@@ -338,6 +378,10 @@ func resident(ctx context.Context, env Env, logf func(string, ...any)) error {
 			logf("watch: %v", err)
 			takeRequests()
 		case <-minute.C:
+			if exeGone(env.Exe) {
+				logf("my executable %s is gone (plugin removed); exiting", env.Exe)
+				return nil
+			}
 			if now := herdr.ServerIdentity(env.Socket); now != "" {
 				if identity == "" {
 					// Ours was unreadable at startup: adopt the first identity we can read.
@@ -351,6 +395,10 @@ func resident(ctx context.Context, env Env, logf func(string, ...any)) error {
 				}
 			}
 			resync()
+			if herdrGone {
+				logf("herdr's socket has been missing or refusing for %s; exiting", absentLimit)
+				return nil
+			}
 			takeRequests()
 			eng.Tick()
 		case <-flashC:
