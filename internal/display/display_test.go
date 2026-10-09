@@ -22,6 +22,7 @@ func TestTokens(t *testing.T) {
 		{View{Phase: model.Armed, Remaining: 37*time.Minute + 10*time.Second, Show: "armed"}, "⏱ 38m"},
 		{View{Phase: model.Armed, Remaining: 37 * time.Minute, Show: "warnings"}, "<nil>"},
 		{View{Phase: model.Armed, Override: model.On, Remaining: 5 * time.Minute, Show: "warnings"}, "⏱ 5m on"},
+		{View{Phase: model.Armed, Remaining: -2 * time.Minute, Show: "armed"}, "⏱ 0m"},
 		{View{Phase: model.Warning, Remaining: 42 * time.Second, Flash: true}, "⚠ 0:42"},
 		{View{Phase: model.Warning, Remaining: 42 * time.Second, Draft: true}, "· 0:42 DRAFT"},
 		{View{Phase: model.Compacting}, "⏳ compacting"},

@@ -50,7 +50,7 @@ type Clock interface {
 }
 
 const (
-	settle    = 400 * time.Millisecond // screen redraw after a key (Task 0 Step 3)
+	settle    = 400 * time.Millisecond // screen redraw after a key
 	tokenTTL  = 3 * time.Minute
 	tokenKey  = "compact"
 	clockSkew = 5 * time.Second
@@ -79,6 +79,7 @@ type tracked struct {
 	warnedAt  time.Time // when the warning last toasted; zero once the record goes quiet
 	snapAt    time.Time // when the activity snapshot was taken
 	stashing  bool      // Ctrl+S sent, the settle read not yet done
+	typing    bool      // /compact typed, the settle read before Enter not yet done
 	finishT   Timer     // the pending finish check while compacting
 }
 
@@ -111,6 +112,7 @@ func (t *tracked) stop() {
 	}
 	t.timers = nil
 	t.finishT = nil
+	t.typing = false
 	t.gen++
 }
 
@@ -174,7 +176,7 @@ func (e *Engine) Status(p Pane) {
 	switch t.phase {
 	case model.Compacting:
 		switch {
-		case t.stashing: // afterStash reads the status itself
+		case t.stashing, t.typing: // afterStash and submit read the status themselves
 		case busy(p.Status):
 			t.sawWork = true
 			if t.finishT != nil {
@@ -396,7 +398,7 @@ func (e *Engine) afterStash(t *tracked) {
 	t.stashing = false
 	d, ok := screen.Draft(text)
 	if err != nil || !ok || d != "" {
-		e.fail(t, "stash failed")
+		e.fail(t, "stash failed; your draft may be in Claude's stash (Ctrl+S on an empty box)")
 		return
 	}
 	t.stashed = true
@@ -415,9 +417,25 @@ func (e *Engine) compact(t *tracked) {
 		e.fail(t, "could not type /compact")
 		return
 	}
+	t.typing = true
+	e.set(t, model.Compacting, "")
+	e.after(t, settle, func() { e.submit(t) })
+}
+
+// submit presses Enter only when the prompt box shows what was typed, so a stray key never sends
+// something else.
+func (e *Engine) submit(t *tracked) {
+	ctx, cancel := e.ctx()
+	defer cancel()
+	t.typing = false
+	text, err := e.h.Read(ctx, t.pane.ID)
+	d, ok := screen.Draft(text)
+	if err != nil || !ok || !strings.HasPrefix(strings.Join(strings.Fields(d), " "), "/compact") {
+		e.fail(t, "prompt box not as typed; nothing was submitted")
+		return
+	}
 	e.keys(ctx, t, "enter")
 	t.started, t.sawWork, t.finishT = e.clk.Now(), false, nil
-	e.set(t, model.Compacting, "")
 	e.after(t, e.cfg.CompactTimeout, func() { e.fail(t, "compact timed out") })
 }
 
@@ -447,8 +465,11 @@ func (e *Engine) finish(t *tracked) {
 		t.stashed, t.draftText = false, ""
 		e.done(t, compacted)
 		return
-	case rerr != nil || !ok || d != "":
+	case rerr != nil || !ok:
 		e.fail(t, "draft not restored: it is in Claude's stash (Ctrl+S)")
+		return
+	case d != "":
+		e.fail(t, "draft not restored: the box holds other text; your draft is in it or in Claude's stash (Ctrl+S on an empty box)")
 		return
 	}
 	e.keys(ctx, t, "ctrl+s")
@@ -578,8 +599,16 @@ func (e *Engine) render(t *tracked, force bool) {
 }
 
 // Tick re-sends every shown token once a minute, refreshing countdowns and token TTLs.
+// A record whose deadline passed more than clockSkew ago (wall clock) missed its timers, which run on
+// the monotonic clock and pause during suspend on linux and macOS; it is re-evaluated, so policy quiets
+// an expired cache or re-arms with a full warning.
 func (e *Engine) Tick() {
+	now := e.clk.Now().Round(0)
 	for _, t := range e.panes {
+		if (t.phase == model.Armed || t.phase == model.Warning) && now.Sub(t.deadline.Round(0)) > clockSkew {
+			t.raw = time.Time{}
+			e.evaluate(t)
+		}
 		if t.shown != nil || t.phase == model.Armed {
 			e.render(t, true)
 		}

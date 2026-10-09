@@ -31,6 +31,9 @@ func newRig() *rig {
 	return r
 }
 
+// typed is the screen after /compact was typed into an empty box, before Enter.
+func typed() string { return scr("❯ /compact The owner stepped away and will resume later.") }
+
 func pane(status string) Pane {
 	return Pane{ID: "p1", Session: "s1", Workspace: "proj", Name: "topic", Status: status}
 }
@@ -47,6 +50,7 @@ func (r *rig) compactDone(pane Pane) {
 
 func TestCompactsIdleBigSessionAtDeadline(t *testing.T) {
 	r := newRig()
+	r.h.screens["p1"] = []string{scr("❯ "), scr("❯ "), scr("❯ "), typed()}
 	r.e.Status(pane("idle"))
 	if r.h.tokens["p1"] != "⏱ 55m" {
 		t.Fatalf("token %q", r.h.tokens["p1"])
@@ -55,7 +59,7 @@ func TestCompactsIdleBigSessionAtDeadline(t *testing.T) {
 	if len(r.h.sent("toast")) != 1 || !strings.HasPrefix(r.h.tokens["p1"], "· 1:00") {
 		t.Fatalf("warning: %v %q", r.h.calls, r.h.tokens["p1"])
 	}
-	r.clk.Advance(time.Minute)
+	r.clk.Advance(time.Minute + time.Second) // deadline, then the settle read before Enter
 	text := r.h.sent("text")
 	if len(text) != 1 || !strings.HasPrefix(text[0], "text p1 /compact The owner stepped away") || len(r.h.sent("keys p1 enter")) != 1 {
 		t.Fatalf("calls %v", r.h.calls)
@@ -135,6 +139,7 @@ func TestDraftIsStashedAndRestored(t *testing.T) {
 		scr("❯ my draft"), // warning read
 		scr("❯ my draft"), // deadline read
 		scr("❯ "),         // after ctrl+s: stashed
+		typed(),           // after /compact was typed
 		scr("❯ "),         // after compaction: box still empty
 		scr("❯ my draft"), // after restoring ctrl+s
 	}
@@ -157,14 +162,14 @@ func TestStashFailedSendsNothing(t *testing.T) {
 	r.h.screens["p1"] = []string{scr("❯ my draft"), scr("❯ my draft"), scr("❯ my draft"), scr("❯ my draft")}
 	r.e.Status(pane("idle"))
 	r.clk.Advance(55*time.Minute + time.Second)
-	if len(r.h.sent("text")) != 0 || r.e.Rows()[0].Phase != model.Failed || r.h.tokens["p1"] != "✗ stash failed" {
+	if len(r.h.sent("text")) != 0 || r.e.Rows()[0].Phase != model.Failed || r.h.tokens["p1"] != "✗ "+stashFailed {
 		t.Fatalf("%v %+v", r.h.calls, r.e.Rows()[0])
 	}
 }
 
 func TestTypedDuringCompactionIsNotOverwritten(t *testing.T) {
 	r := newRig()
-	r.h.screens["p1"] = []string{scr("❯ my draft"), scr("❯ my draft"), scr("❯ my draft"), scr("❯ "), scr("❯ new typing")}
+	r.h.screens["p1"] = []string{scr("❯ my draft"), scr("❯ my draft"), scr("❯ my draft"), scr("❯ "), typed(), scr("❯ new typing")}
 	r.e.Status(pane("idle"))
 	r.clk.Advance(55*time.Minute + time.Second)
 	r.compactDone(pane("idle"))
@@ -220,6 +225,7 @@ func TestNewSessionInSamePaneResets(t *testing.T) {
 
 func TestSameSessionInTwoPanesArmsOnce(t *testing.T) {
 	r := newRig()
+	r.h.screens["p1"] = []string{scr("❯ "), scr("❯ "), scr("❯ "), typed()}
 	r.h.screens["p2"] = []string{scr("❯ ")}
 	r.e.Status(pane("idle"))
 	r.e.Status(Pane{ID: "p2", Session: "s1", Status: "idle"})
@@ -231,6 +237,7 @@ func TestSameSessionInTwoPanesArmsOnce(t *testing.T) {
 
 func TestPaneClosedMidCompactionStopsEverything(t *testing.T) {
 	r := newRig()
+	r.h.screens["p1"] = []string{scr("❯ "), scr("❯ "), scr("❯ "), typed()}
 	r.e.Status(pane("idle"))
 	r.clk.Advance(56 * time.Minute)
 	n := len(r.h.calls)
@@ -254,6 +261,7 @@ func TestSkipThisTimeHoldsUntilNextRequest(t *testing.T) {
 
 func TestCompactTimeoutFails(t *testing.T) {
 	r := newRig()
+	r.h.screens["p1"] = []string{scr("❯ "), scr("❯ "), scr("❯ "), typed()}
 	r.e.Status(pane("idle"))
 	r.clk.Advance(56 * time.Minute)
 	r.clk.Advance(11 * time.Minute)
@@ -300,6 +308,7 @@ func TestFailureStaysUntilOwnerActs(t *testing.T) {
 
 func TestReEvaluationInWarningWindowKeepsDeadline(t *testing.T) {
 	r := newRig()
+	r.h.screens["p1"] = []string{scr("❯ "), scr("❯ "), scr("❯ "), typed()}
 	r.e.Status(pane("idle"))
 	r.clk.Advance(54*time.Minute + 30*time.Second) // inside the warning window
 	r.e.Status(pane("done"))                       // owner glances at the pane: idle -> done
@@ -325,6 +334,8 @@ func TestUnchangedStatusDoesNotReReadTranscript(t *testing.T) {
 
 func TestLateWakeInsideWarningWindowStillWarnsFirst(t *testing.T) {
 	r := newRig()
+	// late snapshot and warning, the re-armed snapshot and warning, the deadline read, then /compact typed
+	r.h.screens["p1"] = []string{scr("❯ "), scr("❯ "), scr("❯ "), scr("❯ "), scr("❯ "), typed()}
 	r.e.Status(pane("idle"))
 	r.clk.Sleep(57 * time.Minute)
 	r.clk.Advance(0)
@@ -343,8 +354,9 @@ func TestLateWakeInsideWarningWindowStillWarnsFirst(t *testing.T) {
 	}
 }
 
+// draftScreens: snapshot, warning and deadline reads show a draft; Ctrl+S empties the box; /compact is typed.
 func draftScreens() []string {
-	return []string{scr("❯ my draft"), scr("❯ my draft"), scr("❯ my draft"), scr("❯ ")}
+	return []string{scr("❯ my draft"), scr("❯ my draft"), scr("❯ my draft"), scr("❯ "), typed()}
 }
 
 func TestSkipDuringStashWindowDoesNotStrandDraft(t *testing.T) {
@@ -379,7 +391,7 @@ func TestBusyDuringStashWindowFailsWithStashHint(t *testing.T) {
 
 func TestStashedFlagDoesNotLeakIntoNextCycle(t *testing.T) {
 	r := newRig()
-	r.h.screens["p1"] = draftScreens()
+	r.h.screens["p1"] = append(draftScreens(), scr("❯ "), scr("❯ "), scr("❯ "), typed())
 	r.e.Status(pane("idle"))
 	r.clk.Advance(55*time.Minute + time.Second)
 	r.clk.Advance(11 * time.Minute) // compaction times out with the draft stashed
@@ -451,6 +463,7 @@ func TestDraftRestoredByClaudeItselfCountsAsRestored(t *testing.T) {
 	r.h.screens["p1"] = []string{
 		scr("❯ my draft"), scr("❯ my draft"), scr("❯ my draft"), // snapshot, warning, deadline
 		scr("❯ "),         // after ctrl+s: stashed
+		typed(),           // after /compact was typed
 		scr("❯ my draft"), // after compaction: Claude put it back itself
 	}
 	r.e.Status(pane("idle"))
@@ -471,12 +484,92 @@ func TestRestoredDifferentTextFails(t *testing.T) {
 	r := newRig()
 	r.h.screens["p1"] = []string{
 		scr("❯ my draft"), scr("❯ my draft"), scr("❯ my draft"),
-		scr("❯ "), scr("❯ "), scr("❯ other text"), // after the restoring ctrl+s: not the draft
+		scr("❯ "), typed(), scr("❯ "), scr("❯ other text"), // after the restoring ctrl+s: not the draft
 	}
 	r.e.Status(pane("idle"))
 	r.clk.Advance(55*time.Minute + time.Second)
 	r.compactDone(pane("idle"))
 	if row := r.e.Rows()[0]; row.Phase != model.Failed || !strings.HasPrefix(row.Reason, "draft not restored") {
 		t.Fatalf("%+v %v", row, r.h.calls)
+	}
+}
+
+const stashFailed = "stash failed; your draft may be in Claude's stash (Ctrl+S on an empty box)"
+
+func TestEnterOnlyWhenPromptShowsCompact(t *testing.T) {
+	r := newRig()
+	r.h.screens["p1"] = []string{scr("❯ "), scr("❯ "), scr("❯ "), scr("❯ something else")}
+	r.e.Status(pane("idle"))
+	r.clk.Advance(55*time.Minute + time.Second)
+	if len(r.h.sent("text")) != 1 || len(r.h.sent("keys p1 enter")) != 0 {
+		t.Fatalf("enter pressed over unexpected text: %v", r.h.calls)
+	}
+	if row := r.e.Rows()[0]; row.Phase != model.Failed || row.Reason != "prompt box not as typed; nothing was submitted" {
+		t.Fatalf("%+v", row)
+	}
+}
+
+func TestPromptNotAsTypedAfterStashAddsStashHint(t *testing.T) {
+	r := newRig()
+	r.h.screens["p1"] = []string{scr("❯ my draft"), scr("❯ my draft"), scr("❯ my draft"), scr("❯ "), scr("❯ x")}
+	r.e.Status(pane("idle"))
+	r.clk.Advance(55*time.Minute + time.Second)
+	row := r.e.Rows()[0]
+	if len(r.h.sent("keys p1 enter")) != 0 || row.Phase != model.Failed ||
+		row.Reason != "prompt box not as typed; nothing was submitted; draft is in Claude's stash (Ctrl+S)" {
+		t.Fatalf("%v %+v", r.h.calls, row)
+	}
+}
+
+func TestBusyDuringTypeSettleDoesNotFinish(t *testing.T) {
+	r := newRig()
+	r.h.screens["p1"] = []string{scr("❯ "), scr("❯ "), scr("❯ "), typed()}
+	r.e.Status(pane("idle"))
+	r.clk.Advance(55 * time.Minute) // /compact typed, settle pending
+	r.e.Status(pane("working"))
+	r.e.Status(pane("idle"))
+	r.clk.Advance(time.Second)
+	if len(r.h.sent("keys p1 enter")) != 1 || r.e.Rows()[0].Phase != model.Compacting {
+		t.Fatalf("%v %+v", r.h.calls, r.e.Rows()[0])
+	}
+}
+
+func TestFinishWithOtherTextInBoxSaysWhereTheDraftIs(t *testing.T) {
+	r := newRig()
+	r.h.screens["p1"] = append(draftScreens(), scr("❯ new typing"))
+	r.e.Status(pane("idle"))
+	r.clk.Advance(55*time.Minute + time.Second)
+	r.compactDone(pane("idle"))
+	want := "draft not restored: the box holds other text; your draft is in it or in Claude's stash (Ctrl+S on an empty box)"
+	if row := r.e.Rows()[0]; row.Phase != model.Failed || row.Reason != want {
+		t.Fatalf("%+v", row)
+	}
+}
+
+func TestTickAfterSuspendReArmsHonestly(t *testing.T) {
+	r := newRig()
+	r.e.Status(pane("idle"))
+	r.clk.Sleep(57 * time.Minute) // past the 55m deadline, 3m before expiry; timers have not fired
+	r.e.Tick()
+	row := r.e.Rows()[0]
+	if row.Phase != model.Armed || row.Deadline.Before(r.clk.Now().Add(config.Defaults().Warning)) {
+		t.Fatalf("not re-armed: %+v (now %v)", row, r.clk.Now())
+	}
+	if len(r.h.sent("text")) != 0 || len(r.h.sent("keys")) != 0 {
+		t.Fatalf("typed on wake: %v", r.h.calls)
+	}
+}
+
+func TestTickAfterSuspendTooCloseToExpiryGoesQuiet(t *testing.T) {
+	r := newRig()
+	r.e.Status(pane("idle"))
+	r.clk.Sleep(59*time.Minute + 30*time.Second)
+	r.e.Tick()
+	if row := r.e.Rows()[0]; row.Phase != model.Quiet || row.Reason != "too close to expiry" {
+		t.Fatalf("%+v", row)
+	}
+	r.clk.Advance(time.Hour)
+	if len(r.h.sent("text")) != 0 {
+		t.Fatalf("%v", r.h.calls)
 	}
 }

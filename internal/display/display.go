@@ -44,6 +44,9 @@ func Token(v View) *string {
 		return str(t)
 	case model.Armed:
 		mins := int((v.Remaining + time.Minute - 1) / time.Minute)
+		if mins < 0 {
+			mins = 0
+		}
 		t := fmt.Sprintf("⏱ %dm", mins)
 		if v.Override != model.Inherit {
 			t += " " + string(v.Override)
