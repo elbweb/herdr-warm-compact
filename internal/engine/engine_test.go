@@ -445,3 +445,38 @@ func TestNewSessionBelowThresholdClearsOldToken(t *testing.T) {
 		t.Fatalf("old token left up: %q", v)
 	}
 }
+
+func TestDraftRestoredByClaudeItselfCountsAsRestored(t *testing.T) {
+	r := newRig()
+	r.h.screens["p1"] = []string{
+		scr("❯ my draft"), scr("❯ my draft"), scr("❯ my draft"), // snapshot, warning, deadline
+		scr("❯ "),         // after ctrl+s: stashed
+		scr("❯ my draft"), // after compaction: Claude put it back itself
+	}
+	r.e.Status(pane("idle"))
+	r.clk.Advance(55*time.Minute + time.Second)
+	r.compactDone(pane("idle"))
+	if n := len(r.h.sent("keys p1 ctrl+s")); n != 1 {
+		t.Fatalf("ctrl+s sent %d times: %v", n, r.h.calls)
+	}
+	if len(r.h.sent("toast Warm Compact failed")) != 0 {
+		t.Fatalf("%v", r.h.calls)
+	}
+	if row := r.e.Rows()[0]; row.Phase != model.Quiet || row.Reason != "compacted" {
+		t.Fatalf("%+v", row)
+	}
+}
+
+func TestRestoredDifferentTextFails(t *testing.T) {
+	r := newRig()
+	r.h.screens["p1"] = []string{
+		scr("❯ my draft"), scr("❯ my draft"), scr("❯ my draft"),
+		scr("❯ "), scr("❯ "), scr("❯ other text"), // after the restoring ctrl+s: not the draft
+	}
+	r.e.Status(pane("idle"))
+	r.clk.Advance(55*time.Minute + time.Second)
+	r.compactDone(pane("idle"))
+	if row := r.e.Rows()[0]; row.Phase != model.Failed || !strings.HasPrefix(row.Reason, "draft not restored") {
+		t.Fatalf("%+v %v", row, r.h.calls)
+	}
+}

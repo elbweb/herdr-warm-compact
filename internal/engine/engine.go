@@ -66,18 +66,20 @@ type tracked struct {
 	raw      time.Time // facts.At + TTL - Lead as armed; the deadline itself may be pushed out by policy
 	draft    bool
 	stashed  bool
-	sawWork  bool
-	fp       string
-	started  time.Time
-	skipAt   time.Time // the transcript time "skip this time" applied to
-	gen      int
-	timers   []Timer
-	shown    *string
-	sent     bool
-	warnedAt time.Time // when the warning last toasted; zero once the record goes quiet
-	snapAt   time.Time // when the activity snapshot was taken
-	stashing bool      // Ctrl+S sent, the settle read not yet done
-	finishT  Timer     // the pending finish check while compacting
+	// draftText is what Ctrl+S stashed; a restore only counts when the box shows exactly this.
+	draftText string
+	sawWork   bool
+	fp        string
+	started   time.Time
+	skipAt    time.Time // the transcript time "skip this time" applied to
+	gen       int
+	timers    []Timer
+	shown     *string
+	sent      bool
+	warnedAt  time.Time // when the warning last toasted; zero once the record goes quiet
+	snapAt    time.Time // when the activity snapshot was taken
+	stashing  bool      // Ctrl+S sent, the settle read not yet done
+	finishT   Timer     // the pending finish check while compacting
 }
 
 type Engine struct {
@@ -187,7 +189,7 @@ func (e *Engine) Status(p Pane) {
 		return
 	case model.Failed:
 		if busy(p.Status) {
-			t.stashed = false
+			t.stashed, t.draftText = false, ""
 			e.set(t, model.Quiet, "")
 		}
 		return
@@ -374,12 +376,13 @@ func (e *Engine) fire(t *tracked, force bool) {
 	}
 	t.stop()
 	t.facts = f
-	t.stashed = false
+	t.stashed, t.draftText = false, ""
 	if draft == "" {
 		e.compact(t)
 		return
 	}
 	// Compacting covers the settle window: busy events, skip, set and SetConfig leave it alone.
+	t.draftText = draft
 	t.stashing = true
 	e.set(t, model.Compacting, "")
 	e.keys(ctx, t, "ctrl+s")
@@ -437,7 +440,14 @@ func (e *Engine) finish(t *tracked) {
 	ctx, cancel := e.ctx()
 	defer cancel()
 	text, rerr := e.h.Read(ctx, t.pane.ID)
-	if d, ok := screen.Draft(text); rerr != nil || !ok || d != "" {
+	d, ok := screen.Draft(text)
+	switch {
+	case rerr == nil && ok && d == t.draftText:
+		// Claude put the draft back itself; another Ctrl+S would stash it again.
+		t.stashed, t.draftText = false, ""
+		e.done(t, compacted)
+		return
+	case rerr != nil || !ok || d != "":
 		e.fail(t, "draft not restored: it is in Claude's stash (Ctrl+S)")
 		return
 	}
@@ -446,11 +456,11 @@ func (e *Engine) finish(t *tracked) {
 		ctx, cancel := e.ctx()
 		defer cancel()
 		text, err := e.h.Read(ctx, t.pane.ID)
-		if d, _ := screen.Draft(text); err != nil || d == "" {
+		if d, _ := screen.Draft(text); err != nil || d != t.draftText {
 			e.fail(t, "draft not restored: it is in Claude's stash (Ctrl+S)")
 			return
 		}
-		t.stashed = false
+		t.stashed, t.draftText = false, ""
 		e.done(t, compacted)
 	})
 }
@@ -519,7 +529,7 @@ func (e *Engine) reconsider(t *tracked) {
 	t.skipAt = time.Time{}
 	if idle(t.pane.Status) {
 		if t.phase == model.Failed {
-			t.phase, t.stashed = model.Quiet, false
+			t.phase, t.stashed, t.draftText = model.Quiet, false, ""
 		}
 		e.evaluate(t)
 		return
