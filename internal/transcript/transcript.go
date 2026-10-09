@@ -24,8 +24,9 @@ type Facts struct {
 }
 
 var (
-	ErrNotFound = errors.New("transcript not found")
-	ErrNoEntry  = errors.New("no main-thread assistant entry in the transcript")
+	ErrNotFound     = errors.New("transcript not found")
+	ErrNoEntry      = errors.New("no main-thread assistant entry in the transcript")
+	ErrUnrecognised = errors.New("unrecognised transcript entry")
 )
 
 const (
@@ -91,27 +92,45 @@ func ReadLast(path string) (Facts, error) {
 				buf = nil
 			}
 		}
-		facts, found := scan(buf)
-		if found {
+		facts, found, err := scan(buf)
+		if err != nil {
+			return Facts{}, err
+		}
+		complete := start == 0 || window >= maxWindow
+		if found && (facts.TTL != 0 || complete) { // TTL unknown: the cache write may sit further back
 			return facts, nil
 		}
-		if start == 0 || window >= maxWindow {
+		if complete {
 			return Facts{}, ErrNoEntry
 		}
 	}
 }
 
-func scan(buf []byte) (Facts, bool) {
+// scan parses every line of the window. A line that does not parse is tolerated only as the last
+// non-empty line and only when it is not valid JSON (a half-written tail); anywhere else it is
+// ErrUnrecognised. An assistant entry without usage is skipped.
+func scan(buf []byte) (Facts, bool, error) {
 	var facts Facts
 	found := false
 	ttlKnown := false
 	lines := bytes.Split(buf, []byte{'\n'})
-	for i := len(lines) - 1; i >= 0; i-- {
-		var e entry
-		if len(bytes.TrimSpace(lines[i])) == 0 || json.Unmarshal(lines[i], &e) != nil {
+	last := len(lines) - 1
+	for last >= 0 && len(bytes.TrimSpace(lines[last])) == 0 {
+		last--
+	}
+	for i := last; i >= 0; i-- {
+		line := lines[i]
+		if len(bytes.TrimSpace(line)) == 0 {
 			continue
 		}
-		if !found && isCompactMarker(e) && !facts.Compacted {
+		var e entry
+		if err := json.Unmarshal(line, &e); err != nil {
+			if i == last && !json.Valid(line) {
+				continue
+			}
+			return Facts{}, false, ErrUnrecognised
+		}
+		if !found && !facts.Compacted && isCompactMarker(e) {
 			facts.Compacted, facts.CompactedAt = true, e.Timestamp
 			continue
 		}
@@ -124,7 +143,7 @@ func scan(buf []byte) (Facts, bool) {
 			facts.At = e.Timestamp
 			facts.Tokens = u.Input + u.CacheCreation + u.CacheRead
 		}
-		if b := u.Breakdown; b != nil && (b.H1 > 0 || b.M5 > 0) {
+		if b := u.Breakdown; !ttlKnown && b != nil && (b.H1 > 0 || b.M5 > 0) {
 			if b.H1 > 0 {
 				facts.TTL = time.Hour
 			} else {
@@ -132,11 +151,8 @@ func scan(buf []byte) (Facts, bool) {
 			}
 			ttlKnown = true
 		}
-		if ttlKnown {
-			break
-		}
 	}
-	return facts, found
+	return facts, found, nil
 }
 
 // SubagentsWrittenSince reports whether any subagent transcript of this session changed after t.

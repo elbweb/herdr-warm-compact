@@ -52,9 +52,57 @@ func TestTTLFromEarlierCreationWhenLastOnlyReads(t *testing.T) {
 
 func TestTTLUnknownWithoutAnyCreation(t *testing.T) {
 	p := write(t, assistant("2026-01-01T10:00:00Z", 1, 0, 500, 0, 0, false))
-	f, _ := ReadLast(p)
-	if f.TTL != 0 {
-		t.Fatalf("TTL = %v, want 0", f.TTL)
+	f, err := ReadLast(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.TTL != 0 || f.Tokens != 501 || f.At.IsZero() {
+		t.Fatalf("got %+v, want TTL 0, Tokens 501, At set", f)
+	}
+}
+
+func TestTTLFoundBeyondFirstWindow(t *testing.T) {
+	big := `{"type":"user","timestamp":"2026-01-01T10:01:00Z","message":{"content":"` + strings.Repeat("x", 300<<10) + `"}}`
+	p := write(t,
+		assistant("2026-01-01T10:00:00Z", 1, 500, 0, 500, 0, false),
+		big,
+		assistant("2026-01-01T10:02:00Z", 1, 0, 500, 0, 0, false),
+	)
+	f, err := ReadLast(p)
+	if err != nil || f.TTL != time.Hour || f.Tokens != 501 {
+		t.Fatalf("got %+v, %v; want TTL 1h, Tokens 501", f, err)
+	}
+}
+
+func TestMidFileGarbageIsUnrecognised(t *testing.T) {
+	p := write(t,
+		assistant("2026-01-01T10:00:00Z", 1, 10, 0, 10, 0, false),
+		`not json`,
+		assistant("2026-01-01T10:00:05Z", 1, 0, 10, 0, 0, false),
+	)
+	if _, err := ReadLast(p); err != ErrUnrecognised {
+		t.Fatalf("err = %v, want ErrUnrecognised", err)
+	}
+}
+
+func TestBadTimestampIsUnrecognised(t *testing.T) {
+	p := write(t,
+		assistant("2026-01-01T10:00:00Z", 1, 10, 0, 10, 0, false),
+		`{"type":"system","subtype":"compact_boundary","timestamp":"yesterday"}`,
+	)
+	if _, err := ReadLast(p); err != ErrUnrecognised {
+		t.Fatalf("err = %v, want ErrUnrecognised", err)
+	}
+}
+
+func TestCompactMarkerBeforeLastAssistantIsNotCompacted(t *testing.T) {
+	p := write(t,
+		`{"type":"system","subtype":"compact_boundary","timestamp":"2026-01-01T10:55:10Z"}`,
+		assistant("2026-01-01T10:56:00Z", 1, 900, 0, 900, 0, false),
+	)
+	f, err := ReadLast(p)
+	if err != nil || f.Compacted {
+		t.Fatalf("got %+v, %v; want Compacted false", f, err)
 	}
 }
 
@@ -78,8 +126,12 @@ func TestNoAssistantEntry(t *testing.T) {
 
 func TestPartialLastLineIgnored(t *testing.T) {
 	p := write(t, assistant("2026-01-01T10:00:00Z", 1, 10, 0, 10, 0, false), `{"type":"assist`)
-	if _, err := ReadLast(p); err != nil {
+	f, err := ReadLast(p)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if f.Tokens != 11 {
+		t.Fatalf("Tokens = %d, want 11", f.Tokens)
 	}
 }
 
