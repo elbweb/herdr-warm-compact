@@ -268,27 +268,37 @@ func resident(ctx context.Context, env Env, logf func(string, ...any)) error {
 			}
 		}
 	}
-	// takeRequests applies waiting requests; it reports whether one asked the resident to quit.
-	takeRequests := func(startup bool) (quit bool) {
-		reqs, _ := store.TakeRequests(store.RequestsDir(env.ConfigDir))
-		for _, r := range reqs {
+	// Requests are taken through requestTaker, which retries while a file is still held by the OS.
+	// A quit left over from before we started was meant for a previous holder, so it is dropped.
+	starting := true
+	quitReq := false
+	taker := &requestTaker{
+		dir:  store.RequestsDir(env.ConfigDir),
+		take: store.TakeRequests,
+		handle: func(r store.Request) {
 			if r.Kind == "quit" {
-				// A quit left over from before we started was meant for a previous holder.
-				if !startup {
-					quit = true
+				if !starting {
+					quitReq = true
 				}
-				continue
+				return
 			}
 			eng.Request(r)
-		}
-		return quit
+		},
+		schedule: func(d time.Duration, f func()) { time.AfterFunc(d, func() { post(f) }) },
+		logf:     logf,
 	}
+	takeRequests := taker.pass
 	resync()
-	takeRequests(true)
+	takeRequests()
+	starting = false
 	writeStatus()
 	logf("started pid %d", os.Getpid())
 
 	for {
+		if quitReq {
+			logf("quit requested")
+			return nil
+		}
 		select {
 		case <-ctx.Done():
 			return nil
@@ -320,19 +330,13 @@ func resident(ctx context.Context, env Env, logf func(string, ...any)) error {
 					eng.SetConfig(c)
 				}
 			case filepath.Dir(we.Name) == store.RequestsDir(env.ConfigDir) && strings.HasSuffix(we.Name, ".json"):
-				if takeRequests(false) {
-					logf("quit requested")
-					return nil
-				}
+				takeRequests()
 			default:
 				continue
 			}
 		case err := <-watcher.Errors:
 			logf("watch: %v", err)
-			if takeRequests(false) {
-				logf("quit requested")
-				return nil
-			}
+			takeRequests()
 		case <-minute.C:
 			if now := herdr.ServerIdentity(env.Socket); now != "" {
 				if identity == "" {
@@ -347,6 +351,7 @@ func resident(ctx context.Context, env Env, logf func(string, ...any)) error {
 				}
 			}
 			resync()
+			takeRequests()
 			eng.Tick()
 		case <-flashC:
 			eng.Flash()
