@@ -24,5 +24,6 @@ bash:
 
     "$(cat "$(herdr plugin config-dir herdr.warm-compact)/exe-path")" set off
 
-Replace `off` with what the user asked for. Report the line it prints. If `exe-path` is missing, Warm Compact
-is not running; say so and suggest opening its panel from herdr.
+Replace `off` with what the user asked for. Report the line it prints. If the command fails (it says "Warm Compact is
+not running; nothing was changed") or `exe-path` is missing, say Warm Compact is not running and suggest the
+plugin's `restart` action or opening its panel from herdr.

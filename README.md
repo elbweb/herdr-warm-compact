@@ -18,7 +18,7 @@ Requires herdr 0.9.3 or newer and a Go toolchain (the plugin is built on install
     herdr plugin install elbweb/herdr-warm-compact
 
 The plugin starts once with herdr and keeps running. To update, run the install again, then the plugin's
-`restart` action.
+`restart` action, which asks the running copy to stop and starts a fresh one.
 
 On a machine with an attack-surface-reduction rule (for example Windows Defender ASR), allow herdr's plugins
 folder so the freshly built binary may run.
@@ -40,7 +40,7 @@ The setting belongs to the Claude session, not the pane, so a resumed conversati
 All of these change the same per-session setting, at any time.
 
 1. **The panel.** A terminal UI listing every Claude session in every workspace with its tokens, cache
-   lifetime, setting and status. Click a row or use the arrow keys to cycle its setting; "compact now" and
+   lifetime, setting and status. Arrow keys select a row; Enter, Space or a click cycles its setting; "compact now" and
    "skip this time" are per row. The header shows the global default (changeable there; it is written to
    `config.toml`), plugin uptime and config health. Open it with
 
@@ -76,13 +76,13 @@ Values:
 
 | Token | Meaning |
 |---|---|
-| `⏱ 38m` | armed: minutes until it compacts, updated once a minute (a session with its own setting also shows it) |
+| `⏱ 38m` | armed: minutes until it compacts, updated once a minute (`⏱ 38m on` when the session has its own setting) |
 | `⚠ 0:42 DRAFT` | warning window; alternates with a `·` prefix every second so it reads as flashing. `DRAFT` means text in the prompt box will be stashed and restored |
-| `⏳ compacting` | compaction in progress |
+| `⏳ compacting` | compaction in progress, including stashing and restoring a draft |
 | `off` / `on` / `auto` | a session with its own setting that is not currently armed |
 | `✗ <reason>` | a failure; stays until you act, and also raises a toast |
 
-Sessions that are not armed show nothing (under `show = "armed"`). Tokens expire after a few minutes, so if
+Sessions that are not armed and have no setting of their own show nothing (under `show = "armed"`). Tokens expire after a few minutes, so if
 the plugin dies they disappear instead of freezing.
 
 ## Global limits
@@ -140,7 +140,8 @@ plugin's `set <default|auto|on|off>` command for the session's own pane.
 - Run anything per tick: it is one resident process driven by herdr's events, with no polling timer and no
   per-event process spawns.
 
-If the plugin is not running, no countdowns appear anywhere. `herdr plugin log list --plugin herdr.warm-compact`
+If the plugin is not running, no countdowns appear anywhere, the panel says "not running", and `set` and
+`toggle` refuse rather than silently doing nothing; the `restart` action starts it again. `herdr plugin log list --plugin herdr.warm-compact`
 shows its startup process.
 
 ## Caveats
