@@ -74,6 +74,10 @@ type tracked struct {
 	timers   []Timer
 	shown    *string
 	sent     bool
+	warnedAt time.Time // when the warning last toasted; zero once the record goes quiet
+	snapAt   time.Time // when the activity snapshot was taken
+	stashing bool      // Ctrl+S sent, the settle read not yet done
+	finishT  Timer     // the pending finish check while compacting
 }
 
 type Engine struct {
@@ -104,23 +108,38 @@ func (t *tracked) stop() {
 		tm.Stop()
 	}
 	t.timers = nil
+	t.finishT = nil
 	t.gen++
 }
 
 // after runs f on the loop after d, unless the record was stopped, replaced or closed meanwhile.
-func (e *Engine) after(t *tracked, d time.Duration, f func()) {
+func (e *Engine) after(t *tracked, d time.Duration, f func()) Timer {
 	if d < 0 {
 		d = 0
 	}
 	gen := t.gen
-	t.timers = append(t.timers, e.clk.AfterFunc(d, func() {
+	tm := e.clk.AfterFunc(d, func() {
 		e.post(func() {
 			if cur, ok := e.panes[t.pane.ID]; !ok || cur != t || t.gen != gen {
 				return
 			}
 			f()
 		})
-	}))
+	})
+	t.timers = append(t.timers, tm)
+	return tm
+}
+
+func (e *Engine) keys(ctx context.Context, t *tracked, keys ...string) {
+	if err := e.h.SendKeys(ctx, t.pane.ID, keys...); err != nil {
+		e.logf("pane %s: send keys %v: %v", t.pane.ID, keys, err)
+	}
+}
+
+func (e *Engine) notify(ctx context.Context, title, body string) {
+	if err := e.h.Notify(ctx, title, body); err != nil {
+		e.logf("notify: %v", err)
+	}
 }
 
 func (e *Engine) Known(id string) (Pane, bool) {
@@ -138,7 +157,11 @@ func (e *Engine) Status(p Pane) {
 		if ok {
 			t.stop()
 		}
+		old := t
 		t = &tracked{pane: p, phase: model.Quiet}
+		if ok { // the old record's token is still up on the pane
+			t.shown, t.sent = old.shown, old.sent
+		}
 		e.panes[p.ID] = t
 	}
 	prev := t.pane.Status
@@ -148,16 +171,23 @@ func (e *Engine) Status(p Pane) {
 	t.pane = p
 	switch t.phase {
 	case model.Compacting:
-		if busy(p.Status) {
+		switch {
+		case t.stashing: // afterStash reads the status itself
+		case busy(p.Status):
 			t.sawWork = true
-		} else if idle(p.Status) && t.sawWork {
-			e.after(t, settle, func() { e.finish(t) })
+			if t.finishT != nil {
+				t.finishT.Stop()
+				t.finishT = nil
+			}
+		case idle(p.Status) && t.sawWork && t.finishT == nil:
+			t.finishT = e.after(t, settle, func() { e.finish(t) })
 		}
 		return
 	case model.Restoring:
 		return
 	case model.Failed:
 		if busy(p.Status) {
+			t.stashed = false
 			e.set(t, model.Quiet, "")
 		}
 		return
@@ -242,6 +272,7 @@ func (e *Engine) evaluate(t *tracked) {
 func (e *Engine) snapshot(t *tracked) {
 	ctx, cancel := e.ctx()
 	defer cancel()
+	t.snapAt = e.clk.Now()
 	if text, err := e.h.Read(ctx, t.pane.ID); err == nil {
 		t.fp = screen.Fingerprint(text)
 	}
@@ -266,11 +297,16 @@ func (e *Engine) warn(t *tracked) {
 		t.draft = d != ""
 	}
 	e.set(t, model.Warning, "")
+	now := e.clk.Now()
+	if !t.warnedAt.IsZero() && now.Sub(t.warnedAt) <= 2*e.cfg.Warning {
+		return // a re-arm after a late wake; the owner was already told
+	}
+	t.warnedAt = now
 	body := fmt.Sprintf("%s compacts in %s", e.name(t), e.cfg.Warning)
 	if t.draft {
 		body += "; its draft will be stashed and put back"
 	}
-	e.h.Notify(ctx, "Warm Compact", body)
+	e.notify(ctx, "Warm Compact", body)
 }
 
 func (e *Engine) quiet(t *tracked, reason string) {
@@ -294,6 +330,16 @@ func (e *Engine) fire(t *tracked, force bool) {
 	}
 	if !force {
 		if !f.At.Equal(t.facts.At) {
+			e.evaluate(t)
+			return
+		}
+		hold := e.cfg.HoldIfActive
+		if e.cfg.Warning < hold {
+			hold = e.cfg.Warning
+		}
+		if now.Sub(t.warnedAt) < e.cfg.Warning-time.Second || now.Sub(t.snapAt) < hold-time.Second {
+			// woke late: the warning and snapshot ran just now, so give the owner the full warning
+			t.raw = time.Time{}
 			e.evaluate(t)
 			return
 		}
@@ -328,11 +374,15 @@ func (e *Engine) fire(t *tracked, force bool) {
 	}
 	t.stop()
 	t.facts = f
+	t.stashed = false
 	if draft == "" {
 		e.compact(t)
 		return
 	}
-	e.h.SendKeys(ctx, t.pane.ID, "ctrl+s")
+	// Compacting covers the settle window: busy events, skip, set and SetConfig leave it alone.
+	t.stashing = true
+	e.set(t, model.Compacting, "")
+	e.keys(ctx, t, "ctrl+s")
 	e.after(t, settle, func() { e.afterStash(t) })
 }
 
@@ -340,12 +390,17 @@ func (e *Engine) afterStash(t *tracked) {
 	ctx, cancel := e.ctx()
 	defer cancel()
 	text, err := e.h.Read(ctx, t.pane.ID)
+	t.stashing = false
 	d, ok := screen.Draft(text)
 	if err != nil || !ok || d != "" {
 		e.fail(t, "stash failed")
 		return
 	}
 	t.stashed = true
+	if !idle(t.pane.Status) {
+		e.fail(t, "busy after stash")
+		return
+	}
 	e.compact(t)
 }
 
@@ -357,13 +412,17 @@ func (e *Engine) compact(t *tracked) {
 		e.fail(t, "could not type /compact")
 		return
 	}
-	e.h.SendKeys(ctx, t.pane.ID, "enter")
-	t.started, t.sawWork = e.clk.Now(), false
+	e.keys(ctx, t, "enter")
+	t.started, t.sawWork, t.finishT = e.clk.Now(), false, nil
 	e.set(t, model.Compacting, "")
 	e.after(t, e.cfg.CompactTimeout, func() { e.fail(t, "compact timed out") })
 }
 
 func (e *Engine) finish(t *tracked) {
+	t.finishT = nil
+	if !idle(t.pane.Status) {
+		return // went back to work during the settle; keep waiting
+	}
 	t.stop()
 	f, err := e.tr.Facts(t.pane.Session)
 	compacted := err == nil && f.Compacted && !f.CompactedAt.Before(t.started.Add(-clockSkew))
@@ -382,7 +441,7 @@ func (e *Engine) finish(t *tracked) {
 		e.fail(t, "draft not restored: it is in Claude's stash (Ctrl+S)")
 		return
 	}
-	e.h.SendKeys(ctx, t.pane.ID, "ctrl+s")
+	e.keys(ctx, t, "ctrl+s")
 	e.after(t, settle, func() {
 		ctx, cancel := e.ctx()
 		defer cancel()
@@ -415,7 +474,7 @@ func (e *Engine) fail(t *tracked, reason string) {
 	e.set(t, model.Failed, reason)
 	ctx, cancel := e.ctx()
 	defer cancel()
-	e.h.Notify(ctx, "Warm Compact failed", e.name(t)+": "+reason)
+	e.notify(ctx, "Warm Compact failed", e.name(t)+": "+reason)
 }
 
 func (e *Engine) Request(r store.Request) {
@@ -460,7 +519,7 @@ func (e *Engine) reconsider(t *tracked) {
 	t.skipAt = time.Time{}
 	if idle(t.pane.Status) {
 		if t.phase == model.Failed {
-			t.phase = model.Quiet
+			t.phase, t.stashed = model.Quiet, false
 		}
 		e.evaluate(t)
 		return
@@ -483,6 +542,9 @@ func (e *Engine) SetConfig(c config.Config) {
 
 func (e *Engine) set(t *tracked, p model.Phase, reason string) {
 	t.phase, t.reason = p, reason
+	if p == model.Quiet || p == model.Failed {
+		t.warnedAt = time.Time{}
+	}
 	e.render(t, false)
 }
 

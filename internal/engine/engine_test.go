@@ -322,3 +322,126 @@ func TestUnchangedStatusDoesNotReReadTranscript(t *testing.T) {
 		t.Fatalf("re-evaluated on an unchanged status: %+v", r.e.Rows()[0])
 	}
 }
+
+func TestLateWakeInsideWarningWindowStillWarnsFirst(t *testing.T) {
+	r := newRig()
+	r.e.Status(pane("idle"))
+	r.clk.Sleep(57 * time.Minute)
+	r.clk.Advance(0)
+	if n := len(r.h.sent("text")); n != 0 {
+		t.Fatalf("compacted at the instant of waking: %v", r.h.calls)
+	}
+	if n := len(r.h.sent("toast")); n != 1 {
+		t.Fatalf("toasted %d times: %v", n, r.h.calls)
+	}
+	r.clk.Advance(61 * time.Second)
+	if n := len(r.h.sent("text")); n != 1 {
+		t.Fatalf("compaction typed %d times: %v", n, r.h.calls)
+	}
+	if n := len(r.h.sent("toast")); n != 1 {
+		t.Fatalf("toasted %d times after the re-arm: %v", n, r.h.calls)
+	}
+}
+
+func draftScreens() []string {
+	return []string{scr("❯ my draft"), scr("❯ my draft"), scr("❯ my draft"), scr("❯ ")}
+}
+
+func TestSkipDuringStashWindowDoesNotStrandDraft(t *testing.T) {
+	r := newRig()
+	r.h.screens["p1"] = draftScreens()
+	r.e.Status(pane("idle"))
+	r.clk.Advance(55*time.Minute - 100*time.Millisecond)
+	r.clk.Advance(100 * time.Millisecond) // deadline: Ctrl+S sent, settle pending
+	r.e.Request(store.Request{Kind: "skip", Pane: "p1"})
+	r.clk.Advance(time.Second)
+	row := r.e.Rows()[0]
+	if row.Reason == "skipped" || row.Phase == model.Quiet {
+		t.Fatalf("skip dropped the stash window: %+v %v", row, r.h.calls)
+	}
+	if len(r.h.sent("text")) != 1 {
+		t.Fatalf("expected the compaction to go on: %v", r.h.calls)
+	}
+}
+
+func TestBusyDuringStashWindowFailsWithStashHint(t *testing.T) {
+	r := newRig()
+	r.h.screens["p1"] = draftScreens()
+	r.e.Status(pane("idle"))
+	r.clk.Advance(55 * time.Minute)
+	r.e.Status(pane("working"))
+	r.clk.Advance(time.Second)
+	row := r.e.Rows()[0]
+	if len(r.h.sent("text")) != 0 || row.Phase != model.Failed || !strings.Contains(row.Reason, "Claude's stash") {
+		t.Fatalf("%v %+v", r.h.calls, row)
+	}
+}
+
+func TestStashedFlagDoesNotLeakIntoNextCycle(t *testing.T) {
+	r := newRig()
+	r.h.screens["p1"] = draftScreens()
+	r.e.Status(pane("idle"))
+	r.clk.Advance(55*time.Minute + time.Second)
+	r.clk.Advance(11 * time.Minute) // compaction times out with the draft stashed
+	if r.e.Rows()[0].Phase != model.Failed {
+		t.Fatalf("%+v", r.e.Rows()[0])
+	}
+	f := r.tr.facts["s1"]
+	f.At = r.clk.Now()
+	r.tr.facts["s1"] = f
+	r.e.Status(pane("working"))
+	r.e.Status(pane("idle"))
+	r.clk.Advance(55*time.Minute + time.Second)
+	r.compactDone(pane("idle"))
+	if n := len(r.h.sent("keys p1 ctrl+s")); n != 1 {
+		t.Fatalf("spurious restoring ctrl+s: %v", r.h.calls)
+	}
+	for _, c := range r.h.sent("toast") {
+		if strings.Contains(c, "draft not restored") {
+			t.Fatalf("%v", r.h.calls)
+		}
+	}
+	if len(r.h.sent("text")) != 2 || r.e.Rows()[0].Reason != "compacted" {
+		t.Fatalf("%v %+v", r.h.calls, r.e.Rows()[0])
+	}
+}
+
+func TestWorkResumingDuringFinishSettleCancelsRestore(t *testing.T) {
+	r := newRig()
+	r.h.screens["p1"] = append(draftScreens(), scr("❯ "), scr("❯ my draft"))
+	r.e.Status(pane("idle"))
+	r.clk.Advance(55*time.Minute + time.Second)
+	f := r.tr.facts["s1"]
+	f.Compacted, f.CompactedAt = true, r.clk.Now()
+	r.tr.facts["s1"] = f
+	idleP := Pane{ID: "p1", Session: "s1", Status: "idle"}
+	r.e.Status(Pane{ID: "p1", Session: "s1", Status: "working"})
+	r.e.Status(idleP)
+	r.clk.Advance(100 * time.Millisecond)
+	r.e.Status(Pane{ID: "p1", Session: "s1", Status: "working"})
+	r.clk.Advance(time.Second)
+	if n := len(r.h.sent("keys p1 ctrl+s")); n != 1 || len(r.h.sent("toast Warm Compact failed")) != 0 {
+		t.Fatalf("restore ran into a working pane: %v", r.h.calls)
+	}
+	if r.e.Rows()[0].Phase != model.Compacting {
+		t.Fatalf("%+v", r.e.Rows()[0])
+	}
+	r.e.Status(idleP)
+	r.clk.Advance(time.Second)
+	if n := len(r.h.sent("keys p1 ctrl+s")); n != 2 || r.e.Rows()[0].Reason != "compacted" {
+		t.Fatalf("%v %+v", r.h.calls, r.e.Rows()[0])
+	}
+}
+
+func TestNewSessionBelowThresholdClearsOldToken(t *testing.T) {
+	r := newRig()
+	r.tr.facts["s2"] = transcript.Facts{At: t0, Tokens: 10, TTL: time.Hour}
+	r.e.Status(pane("idle"))
+	if r.h.tokens["p1"] != "⏱ 55m" {
+		t.Fatalf("token %q", r.h.tokens["p1"])
+	}
+	r.e.Status(Pane{ID: "p1", Session: "s2", Status: "idle"})
+	if v, ok := r.h.tokens["p1"]; ok {
+		t.Fatalf("old token left up: %q", v)
+	}
+}
