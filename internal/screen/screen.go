@@ -5,11 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"regexp"
+	"strconv"
 	"strings"
 )
-
-// placeholderSGR are the SGR parameters Claude uses for suggestion text in an empty box.
-var placeholderSGR = map[string]bool{"2": true, "90": true}
 
 // busyPatterns match the footer while background work runs.
 var busyPatterns = []*regexp.Regexp{
@@ -17,33 +15,91 @@ var busyPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\bbackground (task|shell|agent)s?\b`),
 }
 
-var sgr = regexp.MustCompile("\x1b\\[([0-9;]*)m")
-var otherCSI = regexp.MustCompile("\x1b\\[[0-9;?]*[A-Za-ln-z]")
+// sgr matches a Select Graphic Rendition sequence; parameters may use ':' sub-parameters.
+var sgr = regexp.MustCompile(`\x1b\[([0-9;:]*)m`)
+var otherCSI = regexp.MustCompile(`\x1b\[[0-9;?]*[A-Za-ln-z]`)
 
-// visibleText drops escape codes and, when dropPlaceholder, the text drawn in a placeholder style.
+// osc matches an operating system command (hyperlinks, titles), ended by BEL or ST.
+var osc = regexp.MustCompile(`\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)`)
+
+// sgrState tracks the two styles that mark suggestion text: faint (2) and grey (90).
+type sgrState struct {
+	faint, grey bool
+}
+
+func (st *sgrState) placeholder() bool { return st.faint || st.grey }
+
+// apply walks the ';'-separated parameters in order. Extended colour arguments
+// (38/48/58 followed by 5;n or 2;r;g;b) are skipped, so their values are never read as codes.
+func (st *sgrState) apply(params string) {
+	parts := strings.Split(params, ";")
+	for i := 0; i < len(parts); i++ {
+		p := parts[i]
+		if strings.Contains(p, ":") {
+			// Colon form: one colour parameter group, never faint.
+			if strings.HasPrefix(p, "38:") {
+				st.grey = false
+			}
+			continue
+		}
+		n := 0
+		if p != "" {
+			var err error
+			if n, err = strconv.Atoi(p); err != nil {
+				continue
+			}
+		}
+		switch {
+		case n == 0:
+			st.faint, st.grey = false, false
+		case n == 2:
+			st.faint = true
+		case n == 22:
+			st.faint = false
+		case n == 90:
+			st.grey = true
+		case n == 39 || (n >= 30 && n <= 37) || (n >= 91 && n <= 97):
+			st.grey = false
+		case n == 38:
+			st.grey = false
+			i = skipColour(parts, i)
+		case n == 48 || n == 58:
+			i = skipColour(parts, i)
+		}
+	}
+}
+
+// skipColour returns the index of the last argument of an extended colour starting at i.
+func skipColour(parts []string, i int) int {
+	if i+1 < len(parts) {
+		switch parts[i+1] {
+		case "5":
+			return i + 2
+		case "2":
+			return i + 4
+		}
+	}
+	return i
+}
+
+// visibleText drops OSC and other escape codes and, when dropPlaceholder, the text drawn in a placeholder style.
 func visibleText(s string, dropPlaceholder bool) string {
+	s = osc.ReplaceAllString(s, "")
 	s = otherCSI.ReplaceAllString(s, "")
 	var b strings.Builder
-	faint := false
+	var st sgrState
 	for len(s) > 0 {
 		loc := sgr.FindStringSubmatchIndex(s)
 		if loc == nil {
-			if !(dropPlaceholder && faint) {
+			if !(dropPlaceholder && st.placeholder()) {
 				b.WriteString(s)
 			}
 			break
 		}
-		if !(dropPlaceholder && faint) {
+		if !(dropPlaceholder && st.placeholder()) {
 			b.WriteString(s[:loc[0]])
 		}
-		for _, p := range strings.Split(s[loc[2]:loc[3]], ";") {
-			switch {
-			case placeholderSGR[p]:
-				faint = true
-			case p == "" || p == "0" || p == "22" || p == "39":
-				faint = false
-			}
-		}
+		st.apply(s[loc[2]:loc[3]])
 		s = s[loc[1]:]
 	}
 	return b.String()

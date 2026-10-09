@@ -86,3 +86,61 @@ func TestObservedFooters(t *testing.T) {
 		t.Fatal("observed idle footer with ← 1 agent counted as busy")
 	}
 }
+
+func wantDraft(t *testing.T, prompt, want string) {
+	t.Helper()
+	d, ok := Draft(box(prompt, footer))
+	if !ok || d != want {
+		t.Fatalf("prompt %q: got %q (ok %v), want %q", prompt, d, ok, want)
+	}
+}
+
+func TestExtendedColourIsADraft(t *testing.T) {
+	wantDraft(t, "❯ \x1b[38;2;120;200;255mtext\x1b[0m", "text")
+	wantDraft(t, "❯ \x1b[38;5;90mtext", "text")
+	wantDraft(t, "❯ \x1b[48;2;1;2;3mtext", "text")
+	wantDraft(t, "❯ \x1b[38;5;2mtext", "text")
+}
+
+func TestFaintAfterOtherCodesIsPlaceholder(t *testing.T) {
+	wantDraft(t, "❯ \x1b[1;2mhint\x1b[0m", "")
+}
+
+func TestColonFormColourIsADraft(t *testing.T) {
+	wantDraft(t, "❯ \x1b[38:2::1:2:3mtext\x1b[0m", "text")
+}
+
+func TestHyperlinkedDraftKeepsText(t *testing.T) {
+	for _, link := range []string{
+		"❯ \x1b]8;;https://x.example/\x07link\x1b]8;;\x07",
+		"❯ \x1b]8;;https://x.example/\x1b\\link\x1b]8;;\x1b\\",
+	} {
+		d, ok := Draft(box(link, footer))
+		if !ok || d != "link" {
+			t.Fatalf("%q: got %q (ok %v)", link, d, ok)
+		}
+	}
+}
+
+func TestBusyCountsPluralAndBash(t *testing.T) {
+	if !Busy(box("❯ ", "  ⏵⏵ auto mode on · 2 shells · ← 1 agent")) {
+		t.Fatal("2 shells not busy")
+	}
+	if !Busy(box("❯ ", "  ⏵⏵ auto mode on · 1 bash")) {
+		t.Fatal("1 bash not busy")
+	}
+}
+
+func TestBusyWithoutBoxIsFalse(t *testing.T) {
+	if Busy("● answer\n✻ 1 shell running\n$ ") {
+		t.Fatal("busy reported without a prompt box")
+	}
+}
+
+func TestEchoedPromptLineAboveBoxIsNotDraft(t *testing.T) {
+	screen := "❯ user typed this earlier\n● answer\n\n" + box("❯ ", footer)
+	d, ok := Draft(screen)
+	if !ok || d != "" {
+		t.Fatalf("echoed line became draft: %q %v", d, ok)
+	}
+}
