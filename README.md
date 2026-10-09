@@ -43,14 +43,23 @@ The setting belongs to the Claude session, not the pane, so a resumed conversati
 
 All of these change the same per-session setting, at any time.
 
-1. **The panel.** A terminal UI listing every Claude session in every workspace with its tokens, cache
-   lifetime, setting and status. Arrow keys select a row; Enter, Space or a click cycles its setting; "compact now" and
+1. **The panel.** A terminal UI listing every Claude session, grouped by workspace, with its tokens, setting,
+   cache lifetime and status. It is 36 columns wide whatever its window, so it reads the same in a phone client
+   such as Collie. Arrow keys select a row; Enter, Space, a click or a tap cycles its setting; "compact now" and
    "skip this time" are per row. The header shows the global default (changeable there; it is written to
-   `config.toml`), plugin uptime and config health. Open it with
+   `config.toml`) and any config error; `?` shows every key, plugin uptime and the last event. Open it with
+   the plugin's `open-panel` action ("Warm Compact: panel"), as a popup or, with `panel = "tab"` in the
+   plugin's config, as a tab that stays open (and so shows in a phone client). To put the action on a key, add
+   to herdr's `config.toml` (`prefix+a` is free in herdr's defaults):
 
-       herdr plugin pane open --plugin herdr.warm-compact --entrypoint panel
+       [[keys.command]]
+       key = "prefix+a"
+       type = "plugin_action"
+       command = "herdr.warm-compact.open-panel"
+       description = "Warm Compact panel"
 
-   or with the plugin's `open-panel` action ("Warm Compact: panel").
+   From a shell, `herdr plugin pane open --plugin herdr.warm-compact --entrypoint panel --placement tab` opens
+   it as a tab, and asking Claude to "open the warm compact panel" does the same.
 2. **From inside Claude.** Tell a session "don't compact this one"; the [skill](#the-claude-skill) runs the
    plugin's `set` command for that session's pane.
 3. **The sidebar token** `$compact` (below).
@@ -108,6 +117,8 @@ five_minute_ttl = false
 compact_timeout = "10m"
 show = "armed"           # sidebar: "armed" = every armed session; "warnings" = only the warning window,
                          # failures and overridden sessions
+panel = "popup"          # how the open-panel action opens the panel: "popup", or "tab" (stays open, so a
+                         # phone client such as Collie lists it)
 instructions = """
 The user stepped away and will resume later. Keep open decisions, the current task and its next step,
 file paths and commands in play, and anything the user said they want.

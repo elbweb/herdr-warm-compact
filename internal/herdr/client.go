@@ -189,8 +189,9 @@ func (c *Client) Notify(ctx context.Context, title, body string) error {
 	return c.call(ctx, "notification.show", map[string]any{"title": title, "body": body}, nil)
 }
 
-func (c *Client) OpenPanel(ctx context.Context) error {
-	return c.call(ctx, "plugin.pane.open", map[string]any{"plugin_id": Source, "entrypoint": "panel", "focus": true}, nil)
+// OpenPanel opens the panel as placement ("popup" or "tab"), overriding the manifest's popup.
+func (c *Client) OpenPanel(ctx context.Context, placement string) error {
+	return c.call(ctx, "plugin.pane.open", map[string]any{"plugin_id": Source, "entrypoint": "panel", "placement": placement, "focus": true}, nil)
 }
 
 type Event struct {

@@ -80,6 +80,17 @@ func TestTokensParams(t *testing.T) {
 	}
 }
 
+func TestOpenPanelPassesPlacement(t *testing.T) {
+	f := &fake{reply: func(string) string { return `{"id":"1","result":{}}` }}
+	if err := f.client().OpenPanel(context.Background(), "tab"); err != nil {
+		t.Fatal(err)
+	}
+	p := f.got[0]["params"].(map[string]any)
+	if f.got[0]["method"] != "plugin.pane.open" || p["entrypoint"] != "panel" || p["placement"] != "tab" {
+		t.Fatal(f.got[0])
+	}
+}
+
 func TestReadReturnsResultReadText(t *testing.T) {
 	f := &fake{reply: func(string) string {
 		return `{"id":"1","result":{"type":"pane_read","read":{"pane_id":"w1:p1","text":"hello screen"}}}`

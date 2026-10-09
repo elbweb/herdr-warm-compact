@@ -13,25 +13,25 @@ import (
 func TestDefaults(t *testing.T) {
 	c := Defaults()
 	if c.Default != model.Auto || c.MinTokens != 175000 || c.Lead != 5*time.Minute || c.Warning != time.Minute ||
-		c.HoldIfActive != time.Minute || c.FiveMinuteTTL || c.CompactTimeout != 10*time.Minute || c.Show != "armed" ||
+		c.HoldIfActive != time.Minute || c.FiveMinuteTTL || c.CompactTimeout != 10*time.Minute || c.Show != "armed" || c.Panel != "popup" ||
 		!strings.Contains(c.Instructions, "stepped away") {
 		t.Fatalf("%+v", c)
 	}
 }
 
 func TestParseOverridesSomeKeys(t *testing.T) {
-	c, err := Parse([]byte("default = \"off\"\nmin_tokens = 90000\nlead = \"57m\"\nshow = \"warnings\"\n"))
+	c, err := Parse([]byte("default = \"off\"\nmin_tokens = 90000\nlead = \"57m\"\nshow = \"warnings\"\npanel = \"tab\"\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Default != model.Off || c.MinTokens != 90000 || c.Lead != 57*time.Minute || c.Show != "warnings" || c.Warning != time.Minute {
+	if c.Default != model.Off || c.MinTokens != 90000 || c.Lead != 57*time.Minute || c.Show != "warnings" || c.Panel != "tab" || c.Warning != time.Minute {
 		t.Fatalf("%+v", c)
 	}
 }
 
 func TestParseRejects(t *testing.T) {
 	for _, bad := range []string{
-		`default = "on"`, `show = "all"`, `lead = "60m"`, `lead = "soon"`, `warning = "0s"`, `min_tokens = -1`, `nope = 1`,
+		`default = "on"`, `show = "all"`, `lead = "60m"`, `lead = "soon"`, `warning = "0s"`, `min_tokens = -1`, `nope = 1`, `panel = "split"`,
 	} {
 		if _, err := Parse([]byte(bad)); err == nil {
 			t.Errorf("Parse(%s) should fail", bad)

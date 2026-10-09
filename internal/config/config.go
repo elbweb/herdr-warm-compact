@@ -22,6 +22,7 @@ type Config struct {
 	CompactTimeout time.Duration
 	FiveMinuteTTL  bool
 	Show           string // "armed" or "warnings"
+	Panel          string // how the open-panel action opens the panel: "popup" or "tab"
 	Instructions   string
 }
 
@@ -31,7 +32,7 @@ const defaultInstructions = "The user stepped away and will resume later. Keep o
 func Defaults() Config {
 	return Config{
 		Default: model.Auto, MinTokens: 175000, Lead: 5 * time.Minute, Warning: time.Minute,
-		HoldIfActive: time.Minute, CompactTimeout: 10 * time.Minute, Show: "armed",
+		HoldIfActive: time.Minute, CompactTimeout: 10 * time.Minute, Show: "armed", Panel: "popup",
 		Instructions: defaultInstructions,
 	}
 }
@@ -45,6 +46,7 @@ type file struct {
 	CompactTimeout *string `toml:"compact_timeout"`
 	FiveMinuteTTL  *bool   `toml:"five_minute_ttl"`
 	Show           *string `toml:"show"`
+	Panel          *string `toml:"panel"`
 	Instructions   *string `toml:"instructions"`
 }
 
@@ -99,6 +101,12 @@ func Parse(data []byte) (Config, error) {
 			return c, fmt.Errorf("show must be armed or warnings, not %q", *f.Show)
 		}
 		c.Show = *f.Show
+	}
+	if f.Panel != nil {
+		if *f.Panel != "popup" && *f.Panel != "tab" {
+			return c, fmt.Errorf("panel must be popup or tab, not %q", *f.Panel)
+		}
+		c.Panel = *f.Panel
 	}
 	if f.Instructions != nil {
 		c.Instructions = *f.Instructions

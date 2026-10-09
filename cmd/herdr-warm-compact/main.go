@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 
+	"github.com/elbweb/herdr-warm-compact/internal/config"
 	"github.com/elbweb/herdr-warm-compact/internal/herdr"
 	"github.com/elbweb/herdr-warm-compact/internal/model"
 	"github.com/elbweb/herdr-warm-compact/internal/panel"
@@ -106,7 +108,13 @@ func dispatch(args []string) error {
 		}
 		return store.WriteRequest(store.RequestsDir(dir), store.Request{Kind: "toggle", Pane: c.Pane})
 	case "open-panel":
-		return herdr.New(os.Getenv("HERDR_SOCKET_PATH")).OpenPanel(context.Background())
+		placement := config.Defaults().Panel
+		if dir, err := run.ConfigDir(); err == nil {
+			if c, err := config.Load(filepath.Join(dir, "config.toml")); err == nil { // a broken config opens the default
+				placement = c.Panel
+			}
+		}
+		return herdr.New(os.Getenv("HERDR_SOCKET_PATH")).OpenPanel(context.Background(), placement)
 	case "panel":
 		dir, err := run.ConfigDir()
 		if err != nil {
