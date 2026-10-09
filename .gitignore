@@ -1,0 +1,8 @@
+/herdr-warm-compact
+/herdr-warm-compact.exe
+*.log
+*.log.1
+/config.toml
+/overrides.json
+/status.json
+/requests/

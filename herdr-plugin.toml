@@ -1,0 +1,48 @@
+id = "herdr.warm-compact"
+name = "Warm Compact"
+version = "0.1.0"
+min_herdr_version = "0.9.3"
+description = "Compacts idle Claude Code sessions before their prompt cache expires"
+platforms = ["linux", "macos", "windows"]
+
+[[build]]
+platforms = ["linux", "macos"]
+command = ["go", "build", "-o", "herdr-warm-compact", "./cmd/herdr-warm-compact"]
+
+[[build]]
+platforms = ["windows"]
+command = ["go", "build", "-o", "herdr-warm-compact.exe", "./cmd/herdr-warm-compact"]
+
+# Starts the resident detached and returns, so it holds no herdr command slot.
+[[startup]]
+command = ["./herdr-warm-compact"]
+
+[[actions]]
+id = "restart"
+title = "Warm Compact: restart"
+description = "Stop the running Warm Compact and start a fresh one"
+contexts = ["global"]
+command = ["./herdr-warm-compact", "restart"]
+
+[[actions]]
+id = "toggle"
+title = "Warm Compact: cycle this session's setting"
+description = "default, auto, on, off"
+contexts = ["pane"]
+command = ["./herdr-warm-compact", "toggle"]
+
+[[actions]]
+id = "open-panel"
+title = "Warm Compact: panel"
+description = "Every Claude session, its countdown and its setting"
+contexts = ["global"]
+command = ["./herdr-warm-compact", "open-panel"]
+
+[[panes]]
+id = "panel"
+title = "Warm Compact"
+description = "Every Claude session, its countdown and its setting"
+placement = "popup"
+width = "90%"
+height = "70%"
+command = ["./herdr-warm-compact", "panel"]
