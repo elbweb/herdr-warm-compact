@@ -171,8 +171,8 @@ shows its startup process.
 Session facts (timestamp, context size, cache lifetime) are read from Claude Code's transcript files
 (under `$CLAUDE_CONFIG_DIR/projects` when `CLAUDE_CONFIG_DIR` is set, else `~/.claude/projects`), an
 internal format that may change; an unrecognised transcript shows `✗ transcript unreadable` and the session
-is never armed. Whether herdr's right-click menus list plugin panes or actions is unverified; use the panel
-command or the actions above.
+is never armed. herdr's plugin API has no menus of its own, so the actions are reached through a key binding
+(above), `herdr plugin action invoke`, or Claude.
 
 ## Licence
 
