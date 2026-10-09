@@ -63,7 +63,11 @@ func (c *Client) open(ctx context.Context, method string, params any) (io.ReadWr
 	go func() {
 		select {
 		case <-ctx.Done():
-			conn.Close()
+			select {
+			case <-done: // open already returned: the caller owns conn now
+			default:
+				conn.Close()
+			}
 		case <-done:
 		}
 	}()
@@ -157,10 +161,13 @@ func (c *Client) Read(ctx context.Context, pane string) (string, error) {
 		} `json:"read"`
 	}
 	err := c.call(ctx, "pane.read", map[string]any{"pane_id": pane, "source": "visible", "format": "ansi", "strip_ansi": false}, &res)
-	if res.Read != nil {
-		return res.Read.Text, err
+	if err != nil {
+		return "", err
 	}
-	return res.Text, err
+	if res.Read != nil {
+		return res.Read.Text, nil
+	}
+	return res.Text, nil
 }
 
 func (c *Client) SendKeys(ctx context.Context, pane string, keys ...string) error {
@@ -196,12 +203,15 @@ type Stream struct {
 }
 
 // Subscribe opens one stream: the global pane events plus status changes of the given panes.
+// ctx scopes only the handshake (bounded by c.Timeout); call Close to stop Next.
 func (c *Client) Subscribe(ctx context.Context, paneIDs []string) (*Stream, error) {
 	subs := []map[string]any{{"type": "pane.created"}, {"type": "pane.closed"}, {"type": "pane.updated"}, {"type": "pane.agent_detected"}}
 	for _, id := range paneIDs {
 		subs = append(subs, map[string]any{"type": "pane.agent_status_changed", "pane_id": id})
 	}
-	conn, r, _, err := c.open(ctx, "events.subscribe", map[string]any{"subscriptions": subs})
+	hctx, cancel := context.WithTimeout(ctx, c.Timeout)
+	defer cancel()
+	conn, r, _, err := c.open(hctx, "events.subscribe", map[string]any{"subscriptions": subs})
 	if err != nil {
 		return nil, err
 	}
@@ -210,6 +220,7 @@ func (c *Client) Subscribe(ctx context.Context, paneIDs []string) (*Stream, erro
 
 func (s *Stream) Close() error { return s.conn.Close() }
 
+// Next blocks for the next event; ctx scopes only the handshake, so call Close to stop it.
 func (s *Stream) Next() (Event, error) {
 	line, err := s.r.ReadBytes('\n')
 	if err != nil {

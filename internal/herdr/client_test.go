@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"testing"
+	"time"
 )
 
 // fake answers one request per connection with the reply func; it records the requests.
@@ -64,7 +65,9 @@ func TestErrorReply(t *testing.T) {
 func TestTokensParams(t *testing.T) {
 	f := &fake{reply: func(string) string { return `{"id":"1","result":{}}` }}
 	v := "⏱ 38m"
-	f.client().Tokens(context.Background(), "w1:p1", map[string]*string{"compact": &v}, 180_000_000_000)
+	if err := f.client().Tokens(context.Background(), "w1:p1", map[string]*string{"compact": &v}, 180_000_000_000); err != nil {
+		t.Fatal(err)
+	}
 	p := f.got[0]["params"].(map[string]any)
 	if f.got[0]["method"] != "pane.report_metadata" || p["source"] != "herdr.warm-compact" || p["ttl_ms"].(float64) != 180000 ||
 		p["tokens"].(map[string]any)["compact"] != "⏱ 38m" {
@@ -100,11 +103,27 @@ func TestSubscribeDecodesEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e1, _ := s.Next()
-	e2, _ := s.Next()
-	e3, _ := s.Next()
-	e4, _ := s.Next()
-	e5, _ := s.Next()
+	defer s.Close()
+	e1, err := s.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	e2, err := s.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	e3, err := s.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	e4, err := s.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	e5, err := s.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if e1.Kind != "pane.agent_status_changed" || e1.Status != "working" || e2.Kind != "pane.closed" || !e3.Lost {
 		t.Fatalf("%+v %+v %+v", e1, e2, e3)
 	}
@@ -114,5 +133,19 @@ func TestSubscribeDecodesEvents(t *testing.T) {
 	subs := f.got[0]["params"].(map[string]any)["subscriptions"].([]any)
 	if len(subs) != 5 { // 4 global + 1 per pane
 		t.Fatalf("subs %v", subs)
+	}
+}
+
+func TestSubscribeHandshakeTimesOut(t *testing.T) {
+	c := New("unused")
+	c.Timeout = 100 * time.Millisecond
+	c.Dial = func(context.Context) (io.ReadWriteCloser, error) {
+		a, b := net.Pipe()
+		go io.Copy(io.Discard, b) // accepts, reads, never answers
+		return a, nil
+	}
+	start := time.Now()
+	if _, err := c.Subscribe(context.Background(), nil); err == nil || time.Since(start) > time.Second {
+		t.Fatalf("%v after %v", err, time.Since(start))
 	}
 }
