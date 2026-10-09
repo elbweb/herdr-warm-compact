@@ -13,7 +13,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -106,12 +105,65 @@ func Resident(ctx context.Context, env Env) error {
 	}
 	logger := log.New(io.Writer(cappedLog{filepath.Join(env.ConfigDir, "warm-compact.log")}), "", log.LstdFlags)
 	logf := logger.Printf
-	if err := claimSingleInstance(env.ConfigDir); err != nil {
+	err := resident(ctx, env, logf)
+	if err != nil {
+		logf("exiting: %v", err)
+	}
+	return err
+}
+
+// claim takes the single-instance lock. A holder from another herdr server is asked to quit; a holder
+// from this server means a duplicate startup, reported as (nil, nil).
+func claim(env Env, identity string, logf func(string, ...any)) (*Lock, error) {
+	try := func(d time.Duration) (*Lock, error) {
+		deadline := time.Now().Add(d)
+		for {
+			l, err := acquireLock(env.ConfigDir)
+			if err != errLocked {
+				return l, err
+			}
+			if time.Now().After(deadline) {
+				return nil, errLocked
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	l, err := try(time.Second)
+	if err != errLocked {
+		return l, err
+	}
+	h, _ := readHolder(env.ConfigDir)
+	if h.Server == "" || h.Server == identity {
+		logf("already running as pid %d", h.PID)
+		return nil, nil
+	}
+	logf("the holder (pid %d) belongs to another herdr server; asking it to quit", h.PID)
+	if err := store.WriteRequest(store.RequestsDir(env.ConfigDir), store.Request{Kind: "quit"}); err != nil {
+		return nil, err
+	}
+	if l, err = try(15 * time.Second); err != nil {
+		return nil, fmt.Errorf("cannot take the lock: %w", err)
+	}
+	return l, nil
+}
+
+func resident(ctx context.Context, env Env, logf func(string, ...any)) error {
+	identity := herdr.ServerIdentity(env.Socket)
+	lock, err := claim(env, identity, logf)
+	if err != nil {
 		return err
 	}
-	os.WriteFile(filepath.Join(env.ConfigDir, "exe-path"), []byte(env.Exe), 0o600)
+	if lock == nil {
+		return nil
+	}
+	defer lock.Release()
+	if err := lock.Write(LockInfo{PID: os.Getpid(), Server: identity, Started: time.Now().UTC().Format(time.RFC3339)}); err != nil {
+		logf("lock info: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(env.ConfigDir, "exe-path"), []byte(env.Exe), 0o600); err != nil {
+		logf("exe-path: %v", err)
+	}
 
-	identity := herdr.ServerIdentity(env.Socket)
 	client := herdr.New(env.Socket)
 	cfgPath := filepath.Join(env.ConfigDir, "config.toml")
 	cfg, cfgErr := config.Load(cfgPath)
@@ -156,8 +208,12 @@ func Resident(ctx context.Context, env Env) error {
 		return err
 	}
 	defer watcher.Close()
-	watcher.Add(env.ConfigDir)
-	watcher.Add(store.RequestsDir(env.ConfigDir))
+	if err := watcher.Add(env.ConfigDir); err != nil {
+		return fmt.Errorf("watch config dir: %w", err)
+	}
+	if err := watcher.Add(store.RequestsDir(env.ConfigDir)); err != nil {
+		return fmt.Errorf("watch requests dir: %w", err)
+	}
 
 	events := make(chan herdr.Event, 256)
 	panesChanged := make(chan struct{}, 1)
@@ -203,7 +259,23 @@ func Resident(ctx context.Context, env Env) error {
 			}
 		}
 	}
+	// takeRequests applies waiting requests; it reports whether one asked the resident to quit.
+	takeRequests := func(startup bool) (quit bool) {
+		reqs, _ := store.TakeRequests(store.RequestsDir(env.ConfigDir))
+		for _, r := range reqs {
+			if r.Kind == "quit" {
+				// A quit left over from before we started was meant for a previous holder.
+				if !startup {
+					quit = true
+				}
+				continue
+			}
+			eng.Request(r)
+		}
+		return quit
+	}
 	resync()
+	takeRequests(true)
 	writeStatus()
 	logf("started pid %d", os.Getpid())
 
@@ -239,18 +311,25 @@ func Resident(ctx context.Context, env Env) error {
 					eng.SetConfig(c)
 				}
 			case filepath.Dir(we.Name) == store.RequestsDir(env.ConfigDir) && strings.HasSuffix(we.Name, ".json"):
-				reqs, _ := store.TakeRequests(store.RequestsDir(env.ConfigDir))
-				for _, r := range reqs {
-					eng.Request(r)
+				if takeRequests(false) {
+					logf("quit requested")
+					return nil
 				}
+			default:
+				continue
 			}
 		case err := <-watcher.Errors:
 			logf("watch: %v", err)
+			if takeRequests(false) {
+				logf("quit requested")
+				return nil
+			}
 		case <-minute.C:
-			if herdr.ServerIdentity(env.Socket) != identity {
+			if now := herdr.ServerIdentity(env.Socket); now != "" && now != identity {
 				logf("herdr server changed; exiting so the new server's copy runs")
 				return nil
 			}
+			resync()
 			eng.Tick()
 		case <-flashC:
 			eng.Flash()
@@ -298,7 +377,7 @@ func streamLoop(ctx context.Context, c *herdr.Client, eng *engine.Engine, out ch
 			}
 			continue
 		}
-		backoff = time.Second
+		started := time.Now()
 		out <- herdr.Event{Kind: "reconnected"}
 		done := make(chan struct{})
 		go func() {
@@ -316,6 +395,19 @@ func streamLoop(ctx context.Context, c *herdr.Client, eng *engine.Engine, out ch
 		}()
 		select {
 		case <-done:
+			// Reset the backoff only after a stream that lived; a drop-loop backs off.
+			if time.Since(started) > 10*time.Second {
+				backoff = time.Second
+			} else {
+				select {
+				case <-time.After(backoff):
+				case <-ctx.Done():
+					return
+				}
+				if backoff < time.Minute {
+					backoff *= 2
+				}
+			}
 		case <-changed:
 			time.Sleep(500 * time.Millisecond) // let a burst of pane changes settle
 			s.Close()
@@ -323,30 +415,6 @@ func streamLoop(ctx context.Context, c *herdr.Client, eng *engine.Engine, out ch
 		case <-ctx.Done():
 			s.Close()
 			return
-		}
-	}
-}
-
-// claimSingleInstance writes our pid, refusing when the pid file names a live process.
-func claimSingleInstance(dir string) error {
-	pidFile := filepath.Join(dir, "warm-compact.pid")
-	if b, err := os.ReadFile(pidFile); err == nil {
-		if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && pid != os.Getpid() && alive(pid) {
-			return fmt.Errorf("already running as pid %d", pid)
-		}
-	}
-	return os.WriteFile(pidFile, []byte(strconv.Itoa(os.Getpid())), 0o600)
-}
-
-// Stop kills the resident named by the pid file, if any.
-func Stop(dir string) {
-	b, err := os.ReadFile(filepath.Join(dir, "warm-compact.pid"))
-	if err != nil {
-		return
-	}
-	if pid, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && alive(pid) {
-		if p, err := os.FindProcess(pid); err == nil {
-			p.Kill()
 		}
 	}
 }

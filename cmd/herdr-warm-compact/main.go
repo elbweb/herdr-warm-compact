@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -15,6 +16,8 @@ import (
 	"github.com/elbweb/herdr-warm-compact/internal/run"
 	"github.com/elbweb/herdr-warm-compact/internal/store"
 )
+
+var errNotRunning = errors.New("Warm Compact is not running; nothing was changed")
 
 func main() {
 	if err := dispatch(os.Args[1:]); err != nil {
@@ -48,7 +51,9 @@ func dispatch(args []string) error {
 		if err != nil {
 			return err
 		}
-		run.Stop(env.ConfigDir)
+		if err := run.Stop(env.ConfigDir); err != nil {
+			return err
+		}
 		return run.Detach(env.Exe, "run")
 	case "set":
 		if len(args) != 2 {
@@ -64,6 +69,9 @@ func dispatch(args []string) error {
 		dir, err := run.ConfigDir()
 		if err != nil {
 			return err
+		}
+		if !run.Running(dir) {
+			return errNotRunning
 		}
 		if err := store.WriteRequest(store.RequestsDir(dir), store.Request{Kind: "set", Pane: pane, Value: args[1]}); err != nil {
 			return err
@@ -81,6 +89,9 @@ func dispatch(args []string) error {
 		dir, err := run.ConfigDir()
 		if err != nil {
 			return err
+		}
+		if !run.Running(dir) {
+			return errNotRunning
 		}
 		return store.WriteRequest(store.RequestsDir(dir), store.Request{Kind: "toggle", Pane: c.Pane})
 	case "open-panel":
