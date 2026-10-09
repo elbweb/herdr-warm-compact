@@ -32,7 +32,7 @@ func newRig() *rig {
 }
 
 // typed is the screen after /compact was typed into an empty box, before Enter.
-func typed() string { return scr("❯ /compact The owner stepped away and will resume later.") }
+func typed() string { return scr("❯ /compact The user stepped away and will resume later.") }
 
 func pane(status string) Pane {
 	return Pane{ID: "p1", Session: "s1", Workspace: "proj", Name: "topic", Status: status}
@@ -61,7 +61,7 @@ func TestCompactsIdleBigSessionAtDeadline(t *testing.T) {
 	}
 	r.clk.Advance(time.Minute + time.Second) // deadline, then the settle read before Enter
 	text := r.h.sent("text")
-	if len(text) != 1 || !strings.HasPrefix(text[0], "text p1 /compact The owner stepped away") || len(r.h.sent("keys p1 enter")) != 1 {
+	if len(text) != 1 || !strings.HasPrefix(text[0], "text p1 /compact The user stepped away") || len(r.h.sent("keys p1 enter")) != 1 {
 		t.Fatalf("calls %v", r.h.calls)
 	}
 	if r.h.tokens["p1"] != "⏳ compacting" {
@@ -291,7 +291,7 @@ func TestNoTranscriptYetIsQuiet(t *testing.T) {
 	}
 }
 
-func TestFailureStaysUntilOwnerActs(t *testing.T) {
+func TestFailureStaysUntilUserActs(t *testing.T) {
 	r := newRig()
 	r.h.screens["p1"] = []string{scr("❯ d"), scr("❯ d"), scr("❯ d"), scr("❯ d")}
 	r.e.Status(pane("idle"))
@@ -300,9 +300,9 @@ func TestFailureStaysUntilOwnerActs(t *testing.T) {
 	if r.e.Rows()[0].Phase != model.Failed {
 		t.Fatal("failure cleared by a status event")
 	}
-	r.e.Status(pane("working")) // the owner sent something
+	r.e.Status(pane("working")) // the user sent something
 	if r.e.Rows()[0].Phase == model.Failed {
-		t.Fatal("failure not cleared when the owner acted")
+		t.Fatal("failure not cleared when the user acted")
 	}
 }
 
@@ -311,7 +311,7 @@ func TestReEvaluationInWarningWindowKeepsDeadline(t *testing.T) {
 	r.h.screens["p1"] = []string{scr("❯ "), scr("❯ "), scr("❯ "), typed()}
 	r.e.Status(pane("idle"))
 	r.clk.Advance(54*time.Minute + 30*time.Second) // inside the warning window
-	r.e.Status(pane("done"))                       // owner glances at the pane: idle -> done
+	r.e.Status(pane("done"))                       // user glances at the pane: idle -> done
 	r.e.Status(pane("idle"))
 	r.clk.Advance(31 * time.Second) // past the original 55m deadline
 	if n := len(r.h.sent("toast")); n != 1 {

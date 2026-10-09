@@ -13,7 +13,7 @@ const (
 	Off     Setting = "off"
 )
 
-// ParseSetting reads a setting as the owner types it; "default" and "" both mean Inherit.
+// ParseSetting reads a setting as the user types it; "default" and "" both mean Inherit.
 func ParseSetting(s string) (Setting, error) {
 	switch s {
 	case "", "default":

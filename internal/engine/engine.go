@@ -303,7 +303,7 @@ func (e *Engine) warn(t *tracked) {
 	e.set(t, model.Warning, "")
 	now := e.clk.Now()
 	if !t.warnedAt.IsZero() && now.Sub(t.warnedAt) <= 2*e.cfg.Warning {
-		return // a re-arm after a late wake; the owner was already told
+		return // a re-arm after a late wake; the user was already told
 	}
 	t.warnedAt = now
 	body := fmt.Sprintf("%s compacts in %s", e.name(t), e.cfg.Warning)
@@ -342,7 +342,7 @@ func (e *Engine) fire(t *tracked, force bool) {
 			hold = e.cfg.Warning
 		}
 		if now.Sub(t.warnedAt) < e.cfg.Warning-time.Second || now.Sub(t.snapAt) < hold-time.Second {
-			// woke late: the warning and snapshot ran just now, so give the owner the full warning
+			// woke late: the warning and snapshot ran just now, so give the user the full warning
 			t.raw = time.Time{}
 			e.evaluate(t)
 			return
@@ -544,7 +544,7 @@ func (e *Engine) Request(r store.Request) {
 	}
 }
 
-// reconsider re-evaluates a pane after the owner changed something, clearing a failure.
+// reconsider re-evaluates a pane after the user changed something, clearing a failure.
 func (e *Engine) reconsider(t *tracked) {
 	switch t.phase {
 	case model.Compacting, model.Restoring:

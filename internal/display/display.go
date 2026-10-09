@@ -1,5 +1,5 @@
 // Package display turns a session's phase into the $compact sidebar token. herdr styles a token by its
-// value (fg, bold, dim), so the warning "flash" alternates two prefixes the owner's sidebar rules colour
+// value (fg, bold, dim), so the warning "flash" alternates two prefixes the user's sidebar rules colour
 // differently: "⚠" bright, "·" dim.
 package display
 

@@ -25,8 +25,8 @@ type Config struct {
 	Instructions   string
 }
 
-const defaultInstructions = "The owner stepped away and will resume later. Keep open decisions, the current task and its " +
-	"next step, file paths and commands in play, and anything the owner said they want."
+const defaultInstructions = "The user stepped away and will resume later. Keep open decisions, the current task and its " +
+	"next step, file paths and commands in play, and anything the user said they want."
 
 func Defaults() Config {
 	return Config{
@@ -120,7 +120,7 @@ func Load(path string) (Config, error) {
 
 var defaultLine = regexp.MustCompile(`(?m)^default\s*=.*$`)
 
-// SetDefault changes only the `default` line, keeping the rest of the file as the owner wrote it.
+// SetDefault changes only the `default` line, keeping the rest of the file as the user wrote it.
 func SetDefault(path string, s model.Setting) error {
 	if s != model.Auto && s != model.Off {
 		return fmt.Errorf("default must be auto or off")

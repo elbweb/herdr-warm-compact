@@ -109,8 +109,8 @@ compact_timeout = "10m"
 show = "armed"           # sidebar: "armed" = every armed session; "warnings" = only the warning window,
                          # failures and overridden sessions
 instructions = """
-The owner stepped away and will resume later. Keep open decisions, the current task and its next step,
-file paths and commands in play, and anything the owner said they want.
+The user stepped away and will resume later. Keep open decisions, the current task and its next step,
+file paths and commands in play, and anything the user said they want.
 """
 ```
 
