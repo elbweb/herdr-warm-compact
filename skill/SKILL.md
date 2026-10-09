@@ -1,6 +1,6 @@
 ---
 name: warm-compact
-description: Use when the user asks not to compact this session, to allow or force compaction of this session, to put it back to the default, or asks about Warm Compact / herdr auto-compaction of idle sessions.
+description: 'Use when the user says "don''t compact this session", "never compact this", "compact this session", "allow compaction", "reset compaction to default", or asks about Warm Compact or herdr auto-compaction of idle sessions. Sets this session''s Warm Compact setting (default, auto, on, off).'
 ---
 
 # Warm Compact: this session's setting
